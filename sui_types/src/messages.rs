@@ -1209,4 +1209,3 @@ pub struct ConsensusOutput {
 pub struct ConsensusSync {
     pub sequence_number: SequenceNumber,
 }
-
