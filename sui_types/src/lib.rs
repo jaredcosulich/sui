@@ -28,6 +28,7 @@ pub mod object;
 pub mod serialize;
 pub mod storage;
 pub mod waypoint;
+pub mod iblt;
 
 /// 0x1-- account address where Move stdlib modules are stored
 /// Same as the ObjectID
