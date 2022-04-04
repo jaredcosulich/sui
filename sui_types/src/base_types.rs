@@ -8,6 +8,7 @@ use ed25519_dalek::Digest;
 use hex::FromHex;
 use rand::Rng;
 use serde::{de::Error as _, Deserialize, Serialize};
+use std::borrow::Borrow;
 use std::collections::HashSet;
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
@@ -243,6 +244,18 @@ impl TransactionDigest {
     pub fn random() -> Self {
         let random_bytes = rand::thread_rng().gen::<[u8; 32]>();
         Self::new(random_bytes)
+    }
+}
+
+impl Borrow<[u8]> for TransactionDigest {
+    fn borrow(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl Borrow<[u8]> for &TransactionDigest {
+    fn borrow(&self) -> &[u8] {
+        &self.0
     }
 }
 
