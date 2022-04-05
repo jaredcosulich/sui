@@ -21,6 +21,8 @@ function ObjectLoaded({ data }: { data: DataType }) {
     const [showProperties, setShowProperties] = useState(false);
     const [showConnectedEntities, setShowConnectedEntities] = useState(false);
 
+    const IS_LIBRARY = data.owner === 'SharedImmutable';
+
     useEffect(() => {
         setShowDescription(true);
         setShowProperties(true);
@@ -258,16 +260,22 @@ function ObjectLoaded({ data }: { data: DataType }) {
 
                             <div>
                                 <div>Type</div>
-                                <div>{prepObjTypeValue(data.objType)}</div>
+                                <div>
+                                    {IS_LIBRARY
+                                        ? 'Library'
+                                        : prepObjTypeValue(data.objType)}
+                                </div>
                             </div>
-                            <div>
-                                <div>Owner</div>
-                                <Longtext
-                                    text={extractOwnerData(data.owner)}
-                                    category="unknown"
-                                    isLink={true}
-                                />
-                            </div>
+                            {!IS_LIBRARY && (
+                                <div>
+                                    <div>Owner</div>
+                                    <Longtext
+                                        text={extractOwnerData(data.owner)}
+                                        category="unknown"
+                                        isLink={true}
+                                    />
+                                </div>
+                            )}
                             {data.contract_id && (
                                 <div>
                                     <div>Contract ID</div>
@@ -305,7 +313,7 @@ function ObjectLoaded({ data }: { data: DataType }) {
                             )}
                         </div>
                     )}
-                    {properties.length > 0 && (
+                    {properties.length > 0 && !IS_LIBRARY && (
                         <>
                             <h2
                                 className={styles.clickableheader}
@@ -324,6 +332,26 @@ function ObjectLoaded({ data }: { data: DataType }) {
                                 </div>
                             )}
                         </>
+                    )}
+                    {IS_LIBRARY && data?.data?.contents && (
+                        <div>
+                            <h2
+                                className={styles.clickableheader}
+                                onClick={clickSetShowProperties}
+                            >
+                                Modules {showProperties ? '' : '+'}
+                            </h2>
+                            {showProperties && (
+                                <div className={styles.bytecodebox}>
+                                    {properties.map(([key, value], index) => (
+                                        <div key={`property-${index}`}>
+                                            <div>{prepLabel(key)}</div>
+                                            <div>{value}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
                     )}
                     {ownedObjects.length > 0 && (
                         <>
