@@ -325,6 +325,10 @@ pub struct Object {
     pub owner: Owner,
     /// The digest of the transaction that created or last mutated this object
     pub previous_transaction: TransactionDigest,
+    /// The amount of SUI we would rebate if this object gets deleted.
+    /// This number is re-calculated each time the object is mutated based on
+    /// the present storage gas price.
+    pub storage_rebate: u64,
 }
 
 impl BcsSignable for Object {}
@@ -336,6 +340,7 @@ impl Object {
             data: Data::Move(o),
             owner,
             previous_transaction,
+            storage_rebate: 0,
         }
     }
 
@@ -347,6 +352,7 @@ impl Object {
             data: Data::Package(MovePackage::from(&modules)),
             owner: Owner::SharedImmutable,
             previous_transaction,
+            storage_rebate: 0,
         }
     }
 
@@ -436,6 +442,7 @@ impl Object {
             owner: Owner::SharedImmutable,
             data,
             previous_transaction: TransactionDigest::genesis(),
+            storage_rebate: 0,
         }
     }
 
@@ -453,6 +460,7 @@ impl Object {
             owner: Owner::AddressOwner(owner),
             data,
             previous_transaction: TransactionDigest::genesis(),
+            storage_rebate: 0,
         }
     }
 
@@ -478,6 +486,7 @@ impl Object {
             owner: Owner::AddressOwner(owner),
             data,
             previous_transaction: TransactionDigest::genesis(),
+            storage_rebate: 0,
         }
     }
 
