@@ -25,8 +25,8 @@ aho-corasick = { version = "0.7", features = ["std"] }
 aliasable = { version = "0.1", features = ["alloc"] }
 alloc-no-stdlib = { version = "2", default-features = false }
 alloc-stdlib = { version = "0.2", default-features = false }
-anemo = { git = "https://github.com/mystenlabs/anemo.git", rev = "2c6c81d94fb8abcc0c36f99ab212282bd14cd9cb", default-features = false }
-anemo-tower = { git = "https://github.com/mystenlabs/anemo.git", rev = "2c6c81d94fb8abcc0c36f99ab212282bd14cd9cb", default-features = false }
+anemo = { git = "https://github.com/mystenlabs/anemo.git", rev = "3716a5669c68bd61d6e4958db99674507e0160b4", default-features = false }
+anemo-tower = { git = "https://github.com/mystenlabs/anemo.git", rev = "3716a5669c68bd61d6e4958db99674507e0160b4", default-features = false }
 anes = { version = "0.1" }
 ansi_term = { version = "0.12", default-features = false }
 anyhow = { version = "1", features = ["backtrace", "std"] }
@@ -46,6 +46,7 @@ arrayref = { version = "0.3", default-features = false }
 arrayvec-d8f496e17d97b5cb = { package = "arrayvec", version = "0.5", features = ["array-sizes-33-128", "std"] }
 arrayvec-ca01ad9e24f5d932 = { package = "arrayvec", version = "0.7", features = ["std"] }
 asn1-rs = { version = "0.5", features = ["datetime", "std", "time"] }
+assert_cmd = { version = "2", default-features = false }
 async-compression = { version = "0.3", features = ["brotli", "flate2", "gzip", "tokio", "zlib"] }
 async-lock = { version = "2", default-features = false }
 async-stream = { version = "0.3", default-features = false }
@@ -85,7 +86,8 @@ blst = { version = "0.3" }
 brotli = { version = "3", default-features = false, features = ["alloc-stdlib", "std"] }
 brotli-decompressor = { version = "2", default-features = false, features = ["alloc-stdlib", "std"] }
 bs58 = { version = "0.4", features = ["alloc", "check", "sha2", "std"] }
-bstr = { version = "0.2", default-features = false, features = ["std"] }
+bstr-6f8ce4dd05d13bba = { package = "bstr", version = "0.2", default-features = false, features = ["std"] }
+bstr-dff4ba8e3ae991db = { package = "bstr", version = "1", features = ["alloc", "std", "unicode"] }
 bulletproofs = { version = "4", features = ["rand", "std", "thiserror"] }
 byte-slice-cast = { version = "1", features = ["std"] }
 bytecode-interpreter-crypto = { git = "https://github.com/move-language/move", rev = "5bb2ac5a4a69e6f2df06183aec9b69c6d940f9f7", features = ["fiat"] }
@@ -158,7 +160,6 @@ der-parser = { version = "8", features = ["bigint", "num-bigint", "std"] }
 derive_builder = { version = "0.12", features = ["std"] }
 determinator = { version = "0.10", default-features = false }
 deunicode = { version = "0.4", default-features = false }
-dhat = { version = "0.3", default-features = false }
 diesel = { version = "2", features = ["32-column-tables", "bitflags", "byteorder", "chrono", "itoa", "postgres", "postgres_backend", "pq-sys", "serde_json", "with-deprecated"] }
 diff = { version = "0.1", default-features = false }
 difference = { version = "2" }
@@ -173,6 +174,7 @@ dirs-next = { version = "2", default-features = false }
 dirs-sys = { version = "0.3", default-features = false }
 dirs-sys-next = { version = "0.1", default-features = false }
 dissimilar = { version = "1", default-features = false }
+doc-comment = { version = "0.3", default-features = false }
 dotenvy = { version = "0.15", default-features = false }
 downcast = { version = "0.11", features = ["std"] }
 duration-str = { version = "0.4", features = ["chrono", "serde", "time"] }
@@ -308,7 +310,6 @@ mime = { version = "0.3", default-features = false }
 mime_guess = { version = "2", default-features = false }
 minimal-lexical = { version = "0.2", default-features = false, features = ["std"] }
 miniz_oxide = { version = "0.5", default-features = false }
-mintex = { version = "0.1", default-features = false }
 mio-c38e5c1d305a1b54 = { package = "mio", version = "0.8", features = ["net", "os-ext", "os-poll"] }
 mockall = { version = "0.11", default-features = false }
 move-abigen = { git = "https://github.com/move-language/move", rev = "5bb2ac5a4a69e6f2df06183aec9b69c6d940f9f7", default-features = false }
@@ -535,7 +536,6 @@ subtle = { version = "2", default-features = false, features = ["i128", "std"] }
 subtle-ng = { version = "2", default-features = false, features = ["std"] }
 syn-dff4ba8e3ae991db = { package = "syn", version = "1", features = ["clone-impls", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "quote", "visit", "visit-mut"] }
 sync_wrapper = { version = "0.1", default-features = false }
-sys-info = { version = "0.9", default-features = false }
 tabular = { version = "0.2", features = ["ansi-cell", "strip-ansi-escapes", "unicode-width"] }
 tap = { version = "1", default-features = false }
 target-lexicon = { version = "0.12", features = ["std"] }
@@ -552,7 +552,6 @@ textwrap-a6292c17cd707f01 = { package = "textwrap", version = "0.11", default-fe
 textwrap-3575ec1268b04181 = { package = "textwrap", version = "0.15", default-features = false }
 textwrap-986da7b5efc2b80e = { package = "textwrap", version = "0.16", features = ["smawk", "unicode-linebreak", "unicode-width"] }
 thiserror = { version = "1", default-features = false }
-thousands = { version = "0.2", default-features = false }
 thread_local = { version = "1", default-features = false }
 threadpool = { version = "1", default-features = false }
 thrift = { version = "0.16", features = ["log", "server", "threadpool"] }
@@ -653,9 +652,9 @@ aho-corasick = { version = "0.7", features = ["std"] }
 aliasable = { version = "0.1", features = ["alloc"] }
 alloc-no-stdlib = { version = "2", default-features = false }
 alloc-stdlib = { version = "0.2", default-features = false }
-anemo = { git = "https://github.com/mystenlabs/anemo.git", rev = "2c6c81d94fb8abcc0c36f99ab212282bd14cd9cb", default-features = false }
-anemo-build = { git = "https://github.com/mystenlabs/anemo.git", rev = "2c6c81d94fb8abcc0c36f99ab212282bd14cd9cb", default-features = false }
-anemo-tower = { git = "https://github.com/mystenlabs/anemo.git", rev = "2c6c81d94fb8abcc0c36f99ab212282bd14cd9cb", default-features = false }
+anemo = { git = "https://github.com/mystenlabs/anemo.git", rev = "3716a5669c68bd61d6e4958db99674507e0160b4", default-features = false }
+anemo-build = { git = "https://github.com/mystenlabs/anemo.git", rev = "3716a5669c68bd61d6e4958db99674507e0160b4", default-features = false }
+anemo-tower = { git = "https://github.com/mystenlabs/anemo.git", rev = "3716a5669c68bd61d6e4958db99674507e0160b4", default-features = false }
 anes = { version = "0.1" }
 ansi_term = { version = "0.12", default-features = false }
 anyhow = { version = "1", features = ["backtrace", "std"] }
@@ -680,6 +679,7 @@ arrayvec-ca01ad9e24f5d932 = { package = "arrayvec", version = "0.7", features = 
 asn1-rs = { version = "0.5", features = ["datetime", "std", "time"] }
 asn1-rs-derive = { version = "0.4", default-features = false }
 asn1-rs-impl = { version = "0.1", default-features = false }
+assert_cmd = { version = "2", default-features = false }
 async-compression = { version = "0.3", features = ["brotli", "flate2", "gzip", "tokio", "zlib"] }
 async-lock = { version = "2", default-features = false }
 async-recursion = { version = "1", default-features = false }
@@ -725,7 +725,8 @@ blst = { version = "0.3" }
 brotli = { version = "3", default-features = false, features = ["alloc-stdlib", "std"] }
 brotli-decompressor = { version = "2", default-features = false, features = ["alloc-stdlib", "std"] }
 bs58 = { version = "0.4", features = ["alloc", "check", "sha2", "std"] }
-bstr = { version = "0.2", default-features = false, features = ["std"] }
+bstr-6f8ce4dd05d13bba = { package = "bstr", version = "0.2", default-features = false, features = ["std"] }
+bstr-dff4ba8e3ae991db = { package = "bstr", version = "1", features = ["alloc", "std", "unicode"] }
 bulletproofs = { version = "4", features = ["rand", "std", "thiserror"] }
 bumpalo = { version = "3" }
 byte-slice-cast = { version = "1", features = ["std"] }
@@ -815,7 +816,6 @@ derive_builder_macro = { version = "0.12", default-features = false }
 derive_more = { version = "0.99", features = ["add", "add_assign", "as_mut", "as_ref", "constructor", "convert_case", "deref", "deref_mut", "display", "error", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "iterator", "mul", "mul_assign", "not", "rustc_version", "sum", "try_into", "unwrap"] }
 determinator = { version = "0.10", default-features = false }
 deunicode = { version = "0.4", default-features = false }
-dhat = { version = "0.3", default-features = false }
 diesel = { version = "2", features = ["32-column-tables", "bitflags", "byteorder", "chrono", "itoa", "postgres", "postgres_backend", "pq-sys", "serde_json", "with-deprecated"] }
 diesel_derives = { version = "2", features = ["32-column-tables", "postgres", "with-deprecated"] }
 diff = { version = "0.1", default-features = false }
@@ -832,6 +832,7 @@ dirs-sys = { version = "0.3", default-features = false }
 dirs-sys-next = { version = "0.1", default-features = false }
 displaydoc = { version = "0.2", features = ["std"] }
 dissimilar = { version = "1", default-features = false }
+doc-comment = { version = "0.3", default-features = false }
 dotenvy = { version = "0.15", default-features = false }
 downcast = { version = "0.11", features = ["std"] }
 duration-str = { version = "0.4", features = ["chrono", "serde", "time"] }
@@ -981,7 +982,6 @@ mime = { version = "0.3", default-features = false }
 mime_guess = { version = "2", default-features = false }
 minimal-lexical = { version = "0.2", default-features = false, features = ["std"] }
 miniz_oxide = { version = "0.5", default-features = false }
-mintex = { version = "0.1", default-features = false }
 mio-c38e5c1d305a1b54 = { package = "mio", version = "0.8", features = ["net", "os-ext", "os-poll"] }
 mockall = { version = "0.11", default-features = false }
 mockall_derive = { version = "0.11", default-features = false }
@@ -1256,7 +1256,6 @@ syn-3575ec1268b04181 = { package = "syn", version = "0.15", features = ["clone-i
 syn-dff4ba8e3ae991db = { package = "syn", version = "1", features = ["clone-impls", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "quote", "visit", "visit-mut"] }
 sync_wrapper = { version = "0.1", default-features = false }
 synstructure = { version = "0.12", features = ["proc-macro"] }
-sys-info = { version = "0.9", default-features = false }
 tabular = { version = "0.2", features = ["ansi-cell", "strip-ansi-escapes", "unicode-width"] }
 tap = { version = "1", default-features = false }
 target-lexicon = { version = "0.12", features = ["std"] }
@@ -1275,7 +1274,6 @@ textwrap-3575ec1268b04181 = { package = "textwrap", version = "0.15", default-fe
 textwrap-986da7b5efc2b80e = { package = "textwrap", version = "0.16", features = ["smawk", "unicode-linebreak", "unicode-width"] }
 thiserror = { version = "1", default-features = false }
 thiserror-impl = { version = "1", default-features = false }
-thousands = { version = "0.2", default-features = false }
 thread_local = { version = "1", default-features = false }
 threadpool = { version = "1", default-features = false }
 thrift = { version = "0.16", features = ["log", "server", "threadpool"] }

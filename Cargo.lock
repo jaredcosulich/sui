@@ -111,7 +111,7 @@ dependencies = [
 [[package]]
 name = "anemo"
 version = "0.0.0"
-source = "git+https://github.com/mystenlabs/anemo.git?rev=2c6c81d94fb8abcc0c36f99ab212282bd14cd9cb#2c6c81d94fb8abcc0c36f99ab212282bd14cd9cb"
+source = "git+https://github.com/mystenlabs/anemo.git?rev=3716a5669c68bd61d6e4958db99674507e0160b4#3716a5669c68bd61d6e4958db99674507e0160b4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -141,7 +141,7 @@ dependencies = [
 [[package]]
 name = "anemo-build"
 version = "0.0.0"
-source = "git+https://github.com/mystenlabs/anemo.git?rev=2c6c81d94fb8abcc0c36f99ab212282bd14cd9cb#2c6c81d94fb8abcc0c36f99ab212282bd14cd9cb"
+source = "git+https://github.com/mystenlabs/anemo.git?rev=3716a5669c68bd61d6e4958db99674507e0160b4#3716a5669c68bd61d6e4958db99674507e0160b4"
 dependencies = [
  "prettyplease",
  "proc-macro2 1.0.47",
@@ -152,7 +152,7 @@ dependencies = [
 [[package]]
 name = "anemo-tower"
 version = "0.0.0"
-source = "git+https://github.com/mystenlabs/anemo.git?rev=2c6c81d94fb8abcc0c36f99ab212282bd14cd9cb#2c6c81d94fb8abcc0c36f99ab212282bd14cd9cb"
+source = "git+https://github.com/mystenlabs/anemo.git?rev=3716a5669c68bd61d6e4958db99674507e0160b4#3716a5669c68bd61d6e4958db99674507e0160b4"
 dependencies = [
  "anemo",
  "bytes",
@@ -432,6 +432,20 @@ dependencies = [
  "proc-macro2 1.0.47",
  "quote 1.0.21",
  "syn 1.0.104",
+]
+
+[[package]]
+name = "assert_cmd"
+version = "2.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa3d466004a8b4cb1bc34044240a2fd29d17607e2e3bd613eb44fd48e8100da3"
+dependencies = [
+ "bstr 1.0.1",
+ "doc-comment",
+ "predicates",
+ "predicates-core",
+ "predicates-tree",
+ "wait-timeout",
 ]
 
 [[package]]
@@ -934,6 +948,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba3569f383e8f1598449f1a423e72e99569137b47740b1da11ef19af3d5c3223"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "bstr"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fca0852af221f458706eb0725c03e4ed6c46af9ac98e6a689d5e634215d594dd"
+dependencies = [
+ "memchr",
+ "once_cell",
+ "regex-automata",
+ "serde 1.0.147",
 ]
 
 [[package]]
@@ -2043,22 +2069,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "850878694b7933ca4c9569d30a34b55031b9b139ee1fc7b94a527c4ef960d690"
 
 [[package]]
-name = "dhat"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f2aaf837aaf456f6706cb46386ba8dffd4013a757e36f4ea05c20dd46b209a3"
-dependencies = [
- "backtrace",
- "lazy_static 1.4.0",
- "mintex",
- "parking_lot 0.12.1",
- "rustc-hash",
- "serde 1.0.147",
- "serde_json",
- "thousands",
-]
-
-[[package]]
 name = "diesel"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2207,6 +2217,12 @@ name = "dissimilar"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c97b9233581d84b8e1e689cdd3a47b6f69770084fc246e86a7f78b0d9c1d4a5"
+
+[[package]]
+name = "doc-comment"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fea41bba32d969b513997752735605054bc0dfa92b4c56bf1189f2e174be7a10"
 
 [[package]]
 name = "dotenvy"
@@ -2881,7 +2897,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0a1e17342619edbc21a964c2afbeb6c820c6a2560032872f397bb97ea127bd0a"
 dependencies = [
  "aho-corasick",
- "bstr",
+ "bstr 0.2.17",
  "fnv",
  "log",
  "regex",
@@ -4010,16 +4026,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96590ba8f175222643a85693f33d26e9c8a015f599c216509b1a6894af675d34"
 dependencies = [
  "adler",
-]
-
-[[package]]
-name = "mintex"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd7c5ba1c3b5a23418d7bbf98c71c3d4946a0125002129231da8d6b723d559cb"
-dependencies = [
- "once_cell",
- "sys-info",
 ]
 
 [[package]]
@@ -5195,7 +5201,6 @@ dependencies = [
  "bytes",
  "cfg-if",
  "clap 2.34.0",
- "dhat",
  "eyre",
  "fastcrypto",
  "futures",
@@ -5250,7 +5255,6 @@ dependencies = [
  "bytes",
  "dashmap",
  "derive_builder",
- "dhat",
  "fastcrypto",
  "futures",
  "indexmap",
@@ -6709,9 +6713,9 @@ dependencies = [
 
 [[package]]
 name = "quinn"
-version = "0.9.1"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57659b2d8340fa1a8b9358d14597b0b62ea8b9f6cd77cde07895079d619d2d4e"
+checksum = "445cbfe2382fa023c4f2f3c7e1c95c03dcc1df2bf23cebcb2b13e1402c4394d1"
 dependencies = [
  "bytes",
  "futures-io",
@@ -8188,6 +8192,7 @@ name = "sui"
 version = "0.18.0"
 dependencies = [
  "anyhow",
+ "assert_cmd",
  "async-trait",
  "bcs",
  "bip32",
@@ -8260,6 +8265,7 @@ dependencies = [
  "sui-cost-tables",
  "sui-framework",
  "sui-json",
+ "sui-protocol-constants",
  "sui-types",
  "sui-verifier",
  "tracing",
@@ -8445,6 +8451,7 @@ dependencies = [
  "sui-json-rpc-types",
  "sui-macros",
  "sui-network",
+ "sui-protocol-constants",
  "sui-simulator",
  "sui-storage",
  "sui-types",
@@ -8498,6 +8505,7 @@ dependencies = [
  "move-vm-types",
  "once_cell",
  "serde 1.0.147",
+ "sui-protocol-constants",
  "workspace-hack",
 ]
 
@@ -8828,6 +8836,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sui-protocol-constants"
+version = "0.1.0"
+dependencies = [
+ "workspace-hack",
+]
+
+[[package]]
 name = "sui-rosetta"
 version = "0.1.0"
 dependencies = [
@@ -9143,6 +9158,7 @@ dependencies = [
  "strum",
  "strum_macros",
  "sui-cost-tables",
+ "sui-protocol-constants",
  "tap",
  "test-utils",
  "thiserror",
@@ -9234,16 +9250,6 @@ dependencies = [
  "quote 1.0.21",
  "syn 1.0.104",
  "unicode-xid 0.2.4",
-]
-
-[[package]]
-name = "sys-info"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b3a0d0aba8bf96a0e1ddfdc352fc53b3df7f39318c71854910c3c4b024ae52c"
-dependencies = [
- "cc",
- "libc",
 ]
 
 [[package]]
@@ -9500,12 +9506,6 @@ dependencies = [
  "quote 1.0.21",
  "syn 1.0.104",
 ]
-
-[[package]]
-name = "thousands"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bf63baf9f5039dadc247375c29eb13706706cfde997d0330d05aa63a77d8820"
 
 [[package]]
 name = "thread_local"
@@ -10838,6 +10838,7 @@ dependencies = [
  "asn1-rs",
  "asn1-rs-derive",
  "asn1-rs-impl",
+ "assert_cmd",
  "async-compression",
  "async-lock",
  "async-recursion",
@@ -10884,7 +10885,8 @@ dependencies = [
  "brotli",
  "brotli-decompressor",
  "bs58",
- "bstr",
+ "bstr 0.2.17",
+ "bstr 1.0.1",
  "bulletproofs",
  "bumpalo",
  "byte-slice-cast",
@@ -10983,7 +10985,6 @@ dependencies = [
  "derive_more",
  "determinator",
  "deunicode",
- "dhat",
  "diesel",
  "diesel_derives",
  "diff",
@@ -11000,6 +11001,7 @@ dependencies = [
  "dirs-sys-next",
  "displaydoc",
  "dissimilar",
+ "doc-comment",
  "dotenvy",
  "downcast",
  "duration-str",
@@ -11165,7 +11167,6 @@ dependencies = [
  "mime_guess",
  "minimal-lexical",
  "miniz_oxide",
- "mintex",
  "mio 0.7.14",
  "mio 0.8.4",
  "mockall",
@@ -11468,7 +11469,6 @@ dependencies = [
  "syn 1.0.104",
  "sync_wrapper",
  "synstructure",
- "sys-info",
  "tabular",
  "tap",
  "target-lexicon",
@@ -11487,7 +11487,6 @@ dependencies = [
  "textwrap 0.16.0",
  "thiserror",
  "thiserror-impl",
- "thousands",
  "thread_local",
  "threadpool",
  "thrift",
