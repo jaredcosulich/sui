@@ -7,7 +7,7 @@ mod values;
 
 use crate::{
     metrics::{DBMetrics, RocksDBPerfContext, SamplingInterval},
-    traits::Map,
+    traits::{Map, TableSummary},
 };
 use bincode::Options;
 use collectable::TryExtend;
@@ -238,6 +238,19 @@ impl RocksDB {
             }
         }
     }
+
+    pub fn compact_range_cf<K: AsRef<[u8]>>(
+        &self,
+        cf: &impl AsColumnFamilyRef,
+        start: Option<K>,
+        end: Option<K>,
+    ) {
+        delegate_call!(self.compact_range_cf(cf, start, end))
+    }
+
+    pub fn flush(&self) -> Result<(), rocksdb::Error> {
+        delegate_call!(self.flush())
+    }
 }
 
 pub enum RocksDBBatch {
@@ -412,7 +425,15 @@ impl<K, V> DBMap<K, V> {
         )
     }
 
-    fn cf(&self) -> Arc<rocksdb::BoundColumnFamily<'_>> {
+    pub fn compact_range<J: Serialize>(&self, start: &J, end: &J) -> Result<(), TypedStoreError> {
+        let from_buf = be_fix_int_ser(start.borrow())?;
+        let to_buf = be_fix_int_ser(end.borrow())?;
+        self.rocksdb
+            .compact_range_cf(&self.cf(), Some(from_buf), Some(to_buf));
+        Ok(())
+    }
+
+    pub fn cf(&self) -> Arc<rocksdb::BoundColumnFamily<'_>> {
         self.rocksdb
             .cf_handle(&self.cf)
             .expect("Map-keying column family should have been checked at DB creation")
@@ -613,6 +634,29 @@ impl<K, V> DBMap<K, V> {
 
     pub fn transaction(&self) -> Result<DBTransaction<'_>, TypedStoreError> {
         DBTransaction::new(&self.rocksdb)
+    }
+
+    pub fn table_summary(&self) -> eyre::Result<TableSummary> {
+        let mut num_keys = 0;
+        let mut key_bytes_total = 0;
+        let mut value_bytes_total = 0;
+        let mut key_hist = hdrhistogram::Histogram::<u64>::new_with_max(100000, 2).unwrap();
+        let mut value_hist = hdrhistogram::Histogram::<u64>::new_with_max(100000, 2).unwrap();
+        let iter = self.iterator_cf().map(Result::unwrap);
+        for (key, value) in iter {
+            num_keys += 1;
+            key_bytes_total += key.len();
+            value_bytes_total += value.len();
+            key_hist.record(key.len() as u64)?;
+            value_hist.record(value.len() as u64)?;
+        }
+        Ok(TableSummary {
+            num_keys,
+            key_bytes_total,
+            value_bytes_total,
+            key_hist,
+            value_hist,
+        })
     }
 }
 
@@ -851,13 +895,13 @@ impl<'a> DBTransaction<'a> {
     pub fn get_for_update<K: Serialize, V: DeserializeOwned>(
         &self,
         db: &DBMap<K, V>,
-        key: K,
+        key: &K,
     ) -> Result<Option<V>, TypedStoreError> {
         if !Arc::ptr_eq(&db.rocksdb, &self.rocksdb) {
             return Err(TypedStoreError::CrossDBBatch);
         }
         let k_buf = be_fix_int_ser(key.borrow())?;
-        match self.transaction.get_for_update(k_buf, true)? {
+        match self.transaction.get_for_update_cf(&db.cf(), k_buf, true)? {
             Some(data) => Ok(Some(bincode::deserialize(&data)?)),
             None => Ok(None),
         }

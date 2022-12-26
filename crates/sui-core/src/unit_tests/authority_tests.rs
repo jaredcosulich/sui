@@ -3,12 +3,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use crate::consensus_handler::SequencedConsensusTransaction;
 use crate::{
     authority_client::{AuthorityAPI, NetworkAuthorityClient},
     authority_server::AuthorityServer,
     checkpoints::CheckpointServiceNoop,
+    test_utils::init_state_parameters_from_rng,
 };
 use bcs;
+use futures::{stream::FuturesUnordered, StreamExt};
 use move_binary_format::{
     file_format::{self, AddressIdentifierIndex, IdentifierIndex, ModuleHandle},
     CompiledModule,
@@ -31,6 +34,7 @@ use sui_types::utils::to_sender_signed_transaction;
 
 use std::{convert::TryInto, env};
 use sui_adapter::genesis;
+use sui_macros::sim_test;
 use sui_protocol_constants::MAX_MOVE_PACKAGE_SIZE;
 use sui_types::{
     base_types::dbg_addr,
@@ -715,6 +719,136 @@ async fn test_dev_inspect_return_values() {
 }
 
 #[tokio::test]
+async fn test_dev_inspect_move_call() {
+    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
+    let gas_object_id = ObjectID::random();
+    let (authority_state, object_basics) =
+        init_state_with_ids_and_object_basics(vec![(sender, gas_object_id)]).await;
+
+    // make an object
+    let init_value = 16_u64;
+    let effects = call_move(
+        &authority_state,
+        &gas_object_id,
+        &sender,
+        &sender_key,
+        &object_basics,
+        "object_basics",
+        "create",
+        vec![],
+        vec![
+            TestCallArg::Pure(bcs::to_bytes(&(init_value)).unwrap()),
+            TestCallArg::Pure(bcs::to_bytes(&sender).unwrap()),
+        ],
+    )
+    .await
+    .unwrap();
+    let created_object_id = effects.created[0].0 .0;
+    let created_object = authority_state
+        .get_object(&created_object_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let created_object_bytes = created_object
+        .data
+        .try_as_move()
+        .unwrap()
+        .contents()
+        .to_vec();
+
+    // borrow a value from it's bytes via a direct move call
+    let DevInspectResults { results, effects } = call_dev_inspect_move_call(
+        &authority_state,
+        sender,
+        &object_basics,
+        "object_basics",
+        "borrow_value",
+        vec![],
+        vec![TestCallArg::Pure(created_object_bytes.clone())],
+    )
+    .await
+    .unwrap();
+    assert!(effects.created.is_empty());
+    // no gas object mutated
+    // object isn't mutated since bytes were used
+    assert!(effects.mutated.is_empty());
+    assert!(effects.deleted.is_empty());
+    let gas_object_owner = Owner::AddressOwner(SuiAddress::default());
+    let gas_object_ref = (ObjectID::ZERO, SequenceNumber::new(), ObjectDigest::MIN);
+    assert_eq!(effects.gas_object.owner, gas_object_owner);
+    assert_eq!(effects.gas_object.reference.to_object_ref(), gas_object_ref);
+    assert!(effects.gas_used.computation_cost > 0);
+
+    let mut results = results.unwrap();
+    assert_eq!(results.len(), 1);
+    let (idx, exec_results) = results.pop().unwrap();
+    let SuiExecutionResult {
+        mutable_reference_outputs,
+        mut return_values,
+    } = exec_results;
+    assert_eq!(idx, 0);
+    assert!(mutable_reference_outputs.is_empty());
+    assert_eq!(return_values.len(), 1);
+    let (return_value_1, return_type) = return_values.pop().unwrap();
+    let deserialized_rv1: u64 = bcs::from_bytes(&return_value_1).unwrap();
+    assert_eq!(init_value, deserialized_rv1);
+    let type_tag: TypeTag = return_type.try_into().unwrap();
+    assert!(matches!(type_tag, TypeTag::U64));
+
+    // read two values from it's bytes via direct move call
+    let DevInspectResults { results, .. } = call_dev_inspect_move_call(
+        &authority_state,
+        sender,
+        &object_basics,
+        "object_basics",
+        "get_contents",
+        vec![],
+        vec![TestCallArg::Pure(created_object_bytes.clone())],
+    )
+    .await
+    .unwrap();
+    let mut results = results.unwrap();
+    assert_eq!(results.len(), 1);
+    let (idx, exec_results) = results.pop().unwrap();
+    let SuiExecutionResult {
+        mutable_reference_outputs,
+        mut return_values,
+    } = exec_results;
+    assert_eq!(idx, 0);
+    assert!(mutable_reference_outputs.is_empty());
+    assert_eq!(return_values.len(), 2);
+    let (return_value_2, _return_type) = return_values.pop().unwrap();
+    let (returned_id_bytes, _return_type) = return_values.pop().unwrap();
+    let returned_id: ObjectID = bcs::from_bytes(&returned_id_bytes).unwrap();
+    assert_eq!(return_value_1, return_value_2);
+    assert_eq!(created_object_id, returned_id);
+
+    // read two values from it's bytes via a normal transaction
+    let DevInspectResults { results, .. } = call_dev_inspect(
+        &authority_state,
+        &gas_object_id,
+        &sender,
+        &sender_key,
+        &object_basics,
+        "object_basics",
+        "get_contents",
+        vec![],
+        vec![TestCallArg::Pure(created_object_bytes)],
+    )
+    .await
+    .unwrap();
+    let mut results = results.unwrap();
+    let (_, exec_results) = results.pop().unwrap();
+    let SuiExecutionResult {
+        mutable_reference_outputs: _,
+        mut return_values,
+    } = exec_results;
+    let (return_value_3, _return_type) = return_values.pop().unwrap();
+    // check the value is the same as via the direct move call
+    assert_eq!(return_value_3, return_value_2);
+}
+
+#[tokio::test]
 async fn test_handle_transfer_transaction_bad_signature() {
     let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
     let recipient = dbg_addr(2);
@@ -1341,6 +1475,112 @@ async fn test_handle_move_transaction() {
         .unwrap();
     assert_eq!(created_obj.owner, sender);
     assert_eq!(created_obj.id(), created_object_id);
+}
+
+#[sim_test]
+async fn test_conflicting_transactions() {
+    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
+    let recipient1 = dbg_addr(2);
+    let recipient2 = dbg_addr(3);
+    let object_id = ObjectID::random();
+    let gas_object_id = ObjectID::random();
+    let authority_state =
+        init_state_with_ids(vec![(sender, object_id), (sender, gas_object_id)]).await;
+    let object = authority_state
+        .get_object(&object_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let gas_object = authority_state
+        .get_object(&gas_object_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let tx1 = init_transfer_transaction(
+        sender,
+        &sender_key,
+        recipient1,
+        object.compute_object_reference(),
+        gas_object.compute_object_reference(),
+    );
+
+    let tx2 = init_transfer_transaction(
+        sender,
+        &sender_key,
+        recipient2,
+        object.compute_object_reference(),
+        gas_object.compute_object_reference(),
+    );
+
+    // repeatedly attempt to submit conflicting transactions at the same time, and verify that
+    // exactly one succeeds in every case.
+    //
+    // Note: I verified that this test fails immediately if we remove the acquire_locks() call in
+    // acquire_transaction_locks() and then add a sleep after we read the locks.
+    for _ in 0..100 {
+        let mut futures = FuturesUnordered::new();
+        futures.push(authority_state.handle_transaction(tx1.clone()));
+        futures.push(authority_state.handle_transaction(tx2.clone()));
+
+        let first = futures.next().await.unwrap();
+        let second = futures.next().await.unwrap();
+        assert!(futures.next().await.is_none());
+
+        // exactly one should fail.
+        assert!(first.is_ok() != second.is_ok());
+
+        let (ok, err) = if first.is_ok() {
+            (first.unwrap(), second.unwrap_err())
+        } else {
+            (second.unwrap(), first.unwrap_err())
+        };
+
+        assert!(matches!(err, SuiError::ObjectLockConflict { .. }));
+
+        let object_info = authority_state
+            .handle_object_info_request(ObjectInfoRequest::latest_object_info_request(
+                object.id(),
+                None,
+            ))
+            .await
+            .unwrap();
+        let gas_info = authority_state
+            .handle_object_info_request(ObjectInfoRequest::latest_object_info_request(
+                gas_object.id(),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            ok.signed_transaction.as_ref().unwrap().digest(),
+            object_info
+                .object_and_lock
+                .expect("object should exist")
+                .lock
+                .expect("object should be locked")
+                .digest()
+        );
+
+        assert_eq!(
+            ok.signed_transaction.as_ref().unwrap().digest(),
+            gas_info
+                .object_and_lock
+                .expect("gas should exist")
+                .lock
+                .expect("gas should be locked")
+                .digest()
+        );
+
+        authority_state.database.reset_locks_for_test(
+            &[*tx1.digest(), *tx2.digest()],
+            &[
+                gas_object.compute_object_reference(),
+                object.compute_object_reference(),
+            ],
+        );
+    }
 }
 
 #[tokio::test]
@@ -2218,11 +2458,34 @@ async fn test_account_state_unknown_account() {
 
 #[tokio::test]
 async fn test_authority_persist() {
+    async fn init_state(
+        committee: Committee,
+        authority_key: AuthorityKeyPair,
+        store: Arc<AuthorityStore>,
+    ) -> Arc<AuthorityState> {
+        let name = authority_key.public().into();
+        let secrete = Arc::pin(authority_key);
+        let dir = env::temp_dir();
+        let epoch_path = dir.join(format!("DB_{:?}", nondeterministic!(ObjectID::random())));
+        fs::create_dir(&epoch_path).unwrap();
+        let committee_store = Arc::new(CommitteeStore::new(epoch_path, &committee, None));
+
+        AuthorityState::new(
+            name,
+            secrete,
+            store,
+            committee_store,
+            None,
+            None,
+            None,
+            &prometheus::Registry::new(),
+        )
+        .await
+    }
+
     let seed = [1u8; 32];
     let (committee, _, authority_key) =
-        crate::authority_batch::batch_tests::init_state_parameters_from_rng(
-            &mut StdRng::from_seed(seed),
-        );
+        init_state_parameters_from_rng(&mut StdRng::from_seed(seed));
 
     // Create a random directory to store the DB
     let dir = env::temp_dir();
@@ -2236,12 +2499,12 @@ async fn test_authority_persist() {
             None,
             &committee,
             &Genesis::get_default_genesis(),
+            &AuthorityStorePruningConfig::default(),
         )
         .await
         .unwrap(),
     );
-    let authority =
-        crate::authority_batch::batch_tests::init_state(committee, authority_key, store).await;
+    let authority = init_state(committee, authority_key, store).await;
 
     // Create an object
     let recipient = dbg_addr(2);
@@ -2261,21 +2524,19 @@ async fn test_authority_persist() {
     // Reopen the same authority with the same path
     let seed = [1u8; 32];
     let (committee, _, authority_key) =
-        crate::authority_batch::batch_tests::init_state_parameters_from_rng(
-            &mut StdRng::from_seed(seed),
-        );
+        init_state_parameters_from_rng(&mut StdRng::from_seed(seed));
     let store = Arc::new(
         AuthorityStore::open_with_committee_for_testing(
             &path,
             None,
             &committee,
             &Genesis::get_default_genesis(),
+            &AuthorityStorePruningConfig::default(),
         )
         .await
         .unwrap(),
     );
-    let authority2 =
-        crate::authority_batch::batch_tests::init_state(committee, authority_key, store).await;
+    let authority2 = init_state(committee, authority_key, store).await;
     let obj2 = authority2.get_object(&object_id).await.unwrap().unwrap();
 
     // Check the object is present
@@ -3149,12 +3410,17 @@ pub(crate) async fn send_consensus(authority: &AuthorityState, cert: &VerifiedCe
         ConsensusTransaction::new_certificate_message(&authority.name, cert.clone().into_inner()),
     );
 
-    if let Ok(transaction) = authority.verify_consensus_transaction(cert.epoch(), transaction) {
+    if let Ok(transaction) = authority
+        .epoch_store()
+        .verify_consensus_transaction(transaction, &authority.metrics.skipped_consensus_txns)
+    {
         authority
+            .epoch_store()
             .handle_consensus_transaction(
-                cert.epoch(),
                 transaction,
                 &Arc::new(CheckpointServiceNoop {}),
+                authority.transaction_manager(),
+                authority.db(),
             )
             .await
             .unwrap();
@@ -3170,14 +3436,18 @@ pub(crate) async fn send_consensus_no_execution(
         ConsensusTransaction::new_certificate_message(&authority.name, cert.clone().into_inner()),
     );
 
-    if let Ok(transaction) = authority.verify_consensus_transaction(cert.epoch(), transaction) {
+    if let Ok(transaction) = authority
+        .epoch_store()
+        .verify_consensus_transaction(transaction, &authority.metrics.skipped_consensus_txns)
+    {
         // Call process_consensus_transaction() instead of handle_consensus_transaction(), to avoid actually executing cert.
         // This allows testing cert execution independently.
         authority
+            .epoch_store()
             .process_consensus_transaction(
-                cert.epoch(),
                 transaction,
                 &Arc::new(CheckpointServiceNoop {}),
+                &authority.db(),
             )
             .await
             .unwrap();
@@ -3353,6 +3623,29 @@ pub async fn call_dev_inspect(
             transaction_digest,
         )
         .await
+}
+
+pub async fn call_dev_inspect_move_call(
+    authority: &AuthorityState,
+    sender: SuiAddress,
+    package: &ObjectRef,
+    module: &str,
+    function: &str,
+    type_arguments: Vec<TypeTag>,
+    test_args: Vec<TestCallArg>,
+) -> Result<DevInspectResults, anyhow::Error> {
+    let mut arguments = Vec::with_capacity(test_args.len());
+    for a in test_args {
+        arguments.push(a.to_call_arg(authority).await)
+    }
+    let move_call = MoveCall {
+        package: *package,
+        module: Identifier::new(module).unwrap(),
+        function: Identifier::new(function).unwrap(),
+        type_arguments,
+        arguments,
+    };
+    authority.dev_inspect_move_call(sender, move_call).await
 }
 
 #[cfg(test)]

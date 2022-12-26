@@ -105,10 +105,12 @@ async fn submit_transaction_to_consensus_adapter() {
     impl SubmitToConsensus for SubmitDirectly {
         async fn submit_to_consensus(&self, transaction: &ConsensusTransaction) -> SuiResult {
             self.0
+                .epoch_store()
                 .handle_consensus_transaction(
-                    0,
                     VerifiedSequencedConsensusTransaction::new_test(transaction.clone()),
                     &Arc::new(CheckpointServiceNoop {}),
+                    self.0.transaction_manager(),
+                    self.0.db(),
                 )
                 .await
         }
