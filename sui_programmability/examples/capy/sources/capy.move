@@ -478,17 +478,6 @@ module capy::capy {
         })
     }
 
-    #[test_only]
-    public fun batch_for_test(
-        _: &CapyManagerCap,
-        reg: &mut CapyRegistry,
-        scenario: &mut Scenario
-    ) {
-        let ctx = test_scenario::ctx(scenario);
-        let genes = vector[hash(vector[0]), hash(vector[1])];
-        batch(_, reg, genes, ctx)
-    }
-
     #[test]
     fun test_raw_vec_to_values() {
         let definitions: vector<vector<u8>> = vec::empty();
