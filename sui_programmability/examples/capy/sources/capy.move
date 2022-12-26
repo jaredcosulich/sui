@@ -488,10 +488,10 @@ module capy::capy {
         let genes = vector[hash(vector[0]), hash(vector[1])];
         let capys = batch(_, reg, genes, ctx);
         
-        let capys_length = vector::length(&capys);
+        let capys_length = vec::length(&capys);
         let i = 0;
         while (i < capys_length) {
-            let capy = vector::remove(&mut capys, 0);
+            let capy = vec::remove(&mut capys, 0);
             transfer::transfer(capy, test_scenario::sender(&scenario));
         }
     }
