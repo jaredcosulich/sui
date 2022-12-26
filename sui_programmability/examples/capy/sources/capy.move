@@ -486,7 +486,7 @@ module capy::capy {
     ): vector<Capy> {
         let ctx = test_scenario::ctx(scenario);
         let genes = vector[hash(vector[0]), hash(vector[1])];
-        batch(_, reg, genes, ctx);
+        batch(_, reg, genes, ctx)
     }
 
     #[test]
