@@ -25,6 +25,7 @@ module capy::capy_winter {
     use sui::bcs;
 
     use capy::capy::{Self, Attribute, CapyRegistry};
+    use capy::hex;
 
     /// The name for custom attributes.
     const ATTRIBUTE_NAME: vector<u8> = b"special";
@@ -224,7 +225,7 @@ module capy::capy_winter {
     /// Get a link to the gift on the capy.art.
     fun get_link_url(id: &UID, type: u8): Url {
         let res = b"http://capy.art/gifts/";
-        vec::append(&mut res, sui::hex::encode(object::uid_to_bytes(id)));
+        vec::append(&mut res, hex::encode(object::uid_to_bytes(id)));
         vec::append(&mut res, b"?type=");
         vec::push_back(&mut res, ASCII_OFFSET + type);
 
