@@ -460,9 +460,6 @@ module capy::capy {
     // ================ Test-Only Functions ================
 
     #[test_only]
-    use sui::test_scenario::{Self, Scenario};
-
-    #[test_only]
     public fun init_for_test(ctx: &mut TxContext) {
         let id = object::new(ctx);
         let capy_hash = hash(object::uid_to_bytes(&id));
