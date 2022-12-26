@@ -494,6 +494,7 @@ module capy::capy {
             let capy = vec::remove(&mut capys, 0);
             transfer::transfer(capy, test_scenario::sender(scenario));
         };
+        vec::destroy_empty(capys);
     }
 
     #[test]
