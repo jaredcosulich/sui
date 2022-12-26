@@ -457,6 +457,28 @@ module capy::capy {
         url::new_unsafe_from_bytes(capy_url)
     }
 
+    // ================ Test-Only Functions ================
+
+    #[test_only]
+    use sui::test_scenario::{Self, Scenario};
+
+    #[test_only]
+    public fun init_for_test(ctx: &mut TxContext) {
+        let id = object::new(ctx);
+        let capy_hash = hash(object::uid_to_bytes(&id));
+
+        emit(RegistryCreated { id: object::uid_to_inner(&id) });
+
+        transfer::transfer(CapyManagerCap { id: object::new(ctx) }, tx_context::sender(ctx));
+        transfer::share_object(CapyRegistry {
+            id,
+            capy_hash,
+            capy_born: 0,
+            capy_day: 0,
+            genes: vec::empty()
+        })
+    }
+
     #[test]
     fun test_raw_vec_to_values() {
         let definitions: vector<vector<u8>> = vec::empty();
