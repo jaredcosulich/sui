@@ -489,12 +489,11 @@ module capy::capy {
         let capys = batch(_, reg, genes, ctx);
         
         let capys_length = vec::length(&capys);
-        std::debug::print(&capys_length);
         let i = 0;
         while (i < capys_length) {
-            std::debug::print(&i);
             let capy = vec::remove(&mut capys, 0);
             transfer::transfer(capy, test_scenario::sender(scenario));
+            i = i + 1;
         };
         vec::destroy_empty(capys);
     }
