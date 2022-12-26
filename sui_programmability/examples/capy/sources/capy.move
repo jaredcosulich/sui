@@ -493,7 +493,7 @@ module capy::capy {
         while (i < capys_length) {
             let capy = vec::remove(&mut capys, 0);
             transfer::transfer(capy, test_scenario::sender(scenario));
-        }
+        };
     }
 
     #[test]
