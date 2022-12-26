@@ -474,9 +474,19 @@ module capy::capy {
             id,
             capy_hash,
             capy_born: 0,
-            capy_day: 0,
             genes: vec::empty()
         })
+    }
+
+    #[test_only]
+    public fun batch_for_test(
+        _: &CapyManagerCap,
+        reg: &mut CapyRegistry,
+        scenario: &mut Scenario
+    ) {
+        let ctx = test_scenario::ctx(scenario);
+        let genes = vector[hash(vector[0]), hash(vector[1])];
+        batch(_, reg, genes, ctx)
     }
 
     #[test]
