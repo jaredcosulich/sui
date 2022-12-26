@@ -483,10 +483,17 @@ module capy::capy {
         _: &CapyManagerCap,
         reg: &mut CapyRegistry,
         scenario: &mut Scenario
-    ): vector<Capy> {
+    ) {
         let ctx = test_scenario::ctx(scenario);
         let genes = vector[hash(vector[0]), hash(vector[1])];
-        batch(_, reg, genes, ctx)
+        let capys = batch(_, reg, genes, ctx);
+        
+        let capys_length = vector::length(&capys);
+        let i = 0;
+        while (i < capys_length) {
+            let capy = vector::remove(&mut capys, 0);
+            transfer::transfer(capy, test_scenario::sender(&scenario));
+        }
     }
 
     #[test]
