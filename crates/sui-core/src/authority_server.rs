@@ -291,7 +291,7 @@ impl ValidatorService {
         consensus_adapter: Arc<ConsensusAdapter>,
         request: tonic::Request<CertifiedTransaction>,
         metrics: Arc<ValidatorServiceMetrics>,
-    ) -> Result<tonic::Response<TransactionInfoResponse>, tonic::Status> {
+    ) -> Result<tonic::Response<HandleCertificateResponse>, tonic::Status> {
         let certificate = request.into_inner();
         let shared_object_tx = certificate.contains_shared_object();
 
@@ -303,10 +303,16 @@ impl ValidatorService {
                 .start_timer()
         };
 
+        let epoch_store = state.epoch_store();
+
         // 1) Check if cert already executed
         let tx_digest = *certificate.digest();
-        if let Some(response) = state.get_tx_info_already_executed(&tx_digest).await? {
-            return Ok(tonic::Response::new(response.into()));
+        if let Some(signed_effects) =
+            state.get_signed_effects_and_maybe_resign(epoch_store.epoch(), &tx_digest)?
+        {
+            return Ok(tonic::Response::new(HandleCertificateResponse {
+                signed_effects,
+            }));
         }
 
         // 2) Validate if cert can be executed, and verify the cert.
@@ -323,7 +329,6 @@ impl ValidatorService {
         }
         // code block within reconfiguration lock
         let certificate = {
-            let epoch_store = state.epoch_store();
             let reconfiguration_lock = epoch_store.get_reconfig_state_read_lock_guard();
             if !reconfiguration_lock.should_accept_user_certs() {
                 metrics.num_rejected_cert_in_epoch_boundary.inc();
@@ -339,7 +344,7 @@ impl ValidatorService {
             // For shared objects this will wait until either timeout or we have heard back from consensus.
             // For owned objects this will return without waiting for certificate to be sequenced
             // First do quick dirty non-async check
-            if !state.consensus_message_processed(&certificate)? {
+            if !epoch_store.is_tx_cert_consensus_message_processed(&certificate)? {
                 let _metrics_guard = if shared_object_tx {
                     Some(metrics.consensus_latency.start_timer())
                 } else {
@@ -349,7 +354,7 @@ impl ValidatorService {
                     &state.name,
                     certificate.clone().into(),
                 );
-                consensus_adapter.submit(transaction, Some(&reconfiguration_lock))?;
+                consensus_adapter.submit(transaction, Some(&reconfiguration_lock), &epoch_store)?;
                 // Do not wait for the result, because the transaction might have already executed.
                 // Instead, check or wait for the existence of certificate effects below.
             }
@@ -362,12 +367,14 @@ impl ValidatorService {
         let res = if certificate.contains_shared_object() {
             // The transaction needs sequencing by Narwhal before it can be sent for execution.
             // So rely on the submission to consensus above to execute the certificate.
-            state.notify_read_transaction_info(&certificate).await
+            state.notify_read_effects(&certificate).await
         } else {
-            state.execute_certificate(&certificate).await
+            state.execute_certificate(&certificate, &epoch_store).await
         };
         match res {
-            Ok(response) => Ok(tonic::Response::new(response.into())),
+            Ok(signed_effects) => Ok(tonic::Response::new(HandleCertificateResponse {
+                signed_effects,
+            })),
             Err(e) => Err(tonic::Status::from(e)),
         }
     }
@@ -392,7 +399,7 @@ impl Validator for ValidatorService {
     async fn handle_certificate(
         &self,
         request: tonic::Request<CertifiedTransaction>,
-    ) -> Result<tonic::Response<TransactionInfoResponse>, tonic::Status> {
+    ) -> Result<tonic::Response<HandleCertificateResponse>, tonic::Status> {
         let state = self.state.clone();
         let consensus_adapter = self.consensus_adapter.clone();
 

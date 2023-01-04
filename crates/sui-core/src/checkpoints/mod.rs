@@ -39,7 +39,7 @@ use sui_types::messages_checkpoint::{
     CheckpointSequenceNumber, CheckpointSignatureMessage, CheckpointSummary, VerifiedCheckpoint,
 };
 use tokio::sync::{mpsc, watch, Notify};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 use typed_store::rocks::{DBMap, TypedStoreError};
 use typed_store::traits::{TableSummary, TypedStoreDebug};
 use typed_store::Map;
@@ -305,8 +305,11 @@ impl CheckpointBuilder {
     async fn run(mut self) {
         loop {
             let epoch_store = self.state.epoch_store();
+            let mut last_processed_height: Option<u64> = None;
             for (height, (roots, last_checkpoint_of_epoch)) in epoch_store.get_pending_checkpoints()
             {
+                last_processed_height = Some(height);
+                debug!("Making checkpoint at commit height {height}");
                 if let Err(e) = self
                     .make_checkpoint(&epoch_store, height, roots, last_checkpoint_of_epoch)
                     .await
@@ -318,6 +321,7 @@ impl CheckpointBuilder {
                 }
             }
             drop(epoch_store);
+            debug!("Waiting for more checkpoints from consensus after processing {last_processed_height:?}");
             match select(self.exit.changed().boxed(), self.notify.notified().boxed()).await {
                 Either::Left(_) => {
                     // return on exit signal
@@ -347,7 +351,7 @@ impl CheckpointBuilder {
         let unsorted = self.complete_checkpoint_effects(epoch_store, roots)?;
         let sorted = CasualOrder::casual_sort(unsorted);
         let new_checkpoint = self
-            .create_checkpoint(epoch_store.epoch(), sorted, last_checkpoint_of_epoch)
+            .create_checkpoint(epoch_store, sorted, last_checkpoint_of_epoch)
             .await?;
         self.write_checkpoint(epoch_store, height, new_checkpoint)
             .await?;
@@ -362,8 +366,14 @@ impl CheckpointBuilder {
     ) -> SuiResult {
         let content_info = match new_checkpoint {
             Some((summary, contents)) => {
+                debug!(
+                    "Created checkpoint from commit height {height} with sequence {}",
+                    summary.sequence_number
+                );
                 // Only create checkpoint if content is not empty
-                self.output.checkpoint_created(&summary, &contents).await?;
+                self.output
+                    .checkpoint_created(&summary, &contents, epoch_store)
+                    .await?;
 
                 self.metrics
                     .transactions_included_in_checkpoint
@@ -389,7 +399,10 @@ impl CheckpointBuilder {
                 self.notify_aggregator.notify_waiters();
                 Some((sequence_number, transactions))
             }
-            None => None,
+            None => {
+                debug!("Skipping empty checkpoint at commit height {height}");
+                None
+            }
         };
         epoch_store.process_pending_checkpoint(height, content_info)?;
         Ok(())
@@ -397,7 +410,7 @@ impl CheckpointBuilder {
 
     async fn create_checkpoint(
         &self,
-        epoch: EpochId,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
         mut effects: Vec<TransactionEffects>,
         last_checkpoint_of_epoch: bool,
     ) -> anyhow::Result<Option<(CheckpointSummary, CheckpointContents)>> {
@@ -405,19 +418,22 @@ impl CheckpointBuilder {
         let epoch_rolling_gas_cost_summary = Self::get_epoch_total_gas_cost(
             last_checkpoint.as_ref().map(|(_, c)| c),
             &effects,
-            epoch,
+            epoch_store.epoch(),
         );
         if last_checkpoint_of_epoch {
             self.augment_epoch_last_checkpoint(
-                epoch,
+                epoch_store,
                 &epoch_rolling_gas_cost_summary,
                 &mut effects,
             )
             .await?;
         }
-        if effects.is_empty() {
-            return Ok(None);
-        }
+
+        // Note: empty checkpoints are ok - they shouldn't happen at all on a network with even
+        // modest load. Even if they do happen, it is still useful as it allows fullnodes to
+        // distinguish between "no transactions have happened" and "i am not receiving new
+        // checkpoints".
+
         let contents = CheckpointContents::new_with_causally_ordered_transactions(
             effects.iter().map(TransactionEffects::execution_digests),
         );
@@ -435,7 +451,7 @@ impl CheckpointBuilder {
             .map(|(_, c)| c.sequence_number + 1)
             .unwrap_or_default();
         let summary = CheckpointSummary::new(
-            epoch,
+            epoch_store.epoch(),
             sequence_number,
             network_total_transactions,
             &contents,
@@ -479,14 +495,14 @@ impl CheckpointBuilder {
 
     async fn augment_epoch_last_checkpoint(
         &self,
-        epoch: EpochId,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
         epoch_total_gas_cost: &GasCostSummary,
         effects: &mut Vec<TransactionEffects>,
     ) -> anyhow::Result<()> {
         let cert = self
             .state
             .create_advance_epoch_tx_cert(
-                epoch + 1,
+                epoch_store,
                 epoch_total_gas_cost,
                 Duration::from_secs(60), // TODO: Is 60s enough?
                 self.transaction_certifier.deref(),
@@ -494,10 +510,8 @@ impl CheckpointBuilder {
             .await?;
         let signed_effect = self
             .state
-            .try_execute_immediately(&cert)
-            .await?
-            .signed_effects
-            .unwrap();
+            .try_execute_immediately(&cert, epoch_store)
+            .await?;
         effects.push(signed_effect.into_data());
         Ok(())
     }
@@ -830,7 +844,7 @@ impl CheckpointServiceNotify for CheckpointService {
                 return Ok(());
             }
         }
-        info!(
+        debug!(
             "Received signature for checkpoint sequence {}, digest {} from {}",
             sequence,
             Hex::encode(info.summary.summary.digest()),
@@ -867,6 +881,7 @@ impl CheckpointServiceNotify for CheckpointService {
             index, roots
         );
         epoch_store.insert_pending_checkpoint(&index, &(roots, last_checkpoint_of_epoch))?;
+        debug!("Notifying builder about checkpoint at {index}");
         self.notify_builder.notify_one();
         Ok(())
     }
@@ -1002,7 +1017,7 @@ mod tests {
             Box::new(NetworkTransactionCertifier::default()),
             CheckpointMetrics::new_for_tests(),
         );
-        let epoch_store = state.epoch_store();
+        let epoch_store = state.epoch_store_for_testing();
         let mut tailer = checkpoint_service.subscribe_checkpoints(0);
         checkpoint_service
             .notify_checkpoint(&epoch_store, 0, vec![d(4)], false)
@@ -1094,6 +1109,7 @@ mod tests {
             &self,
             summary: &CheckpointSummary,
             contents: &CheckpointContents,
+            _epoch_store: &Arc<AuthorityPerEpochStore>,
         ) -> SuiResult {
             self.try_send((contents.clone(), summary.clone())).unwrap();
             Ok(())
@@ -1129,7 +1145,12 @@ mod tests {
             gas_used,
             ..Default::default()
         };
-        SignedTransactionEffects::new(state.epoch(), effects, &*state.secret, state.name)
+        SignedTransactionEffects::new(
+            state.epoch_store_for_testing().epoch(),
+            effects,
+            &*state.secret,
+            state.name,
+        )
     }
 
     fn committee() -> (AuthorityKeyPair, Committee) {

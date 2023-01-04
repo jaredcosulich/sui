@@ -74,15 +74,16 @@ use sui_types::{
 
 use crate::authority::authority_notify_read::NotifyRead;
 use crate::authority::authority_per_epoch_store::AuthorityPerEpochStore;
+use crate::authority::authority_store::ExecutionLockReadGuard;
 use crate::authority_aggregator::TransactionCertifier;
 use crate::epoch::committee_store::CommitteeStore;
-use crate::epoch::reconfiguration::ReconfigState;
 use crate::execution_driver::execution_process;
 use crate::module_cache_gauge::ModuleCacheGauge;
 use crate::{
-    event_handler::EventHandler, execution_engine, transaction_input_checker,
+    event_handler::EventHandler, transaction_input_checker,
     transaction_manager::TransactionManager, transaction_streamer::TransactionStreamer,
 };
+use sui_adapter::execution_engine;
 
 #[cfg(test)]
 #[path = "unit_tests/authority_tests.rs"]
@@ -431,6 +432,7 @@ impl AuthorityState {
     async fn handle_transaction_impl(
         &self,
         transaction: VerifiedTransaction,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
     ) -> Result<VerifiedTransactionInfoResponse, SuiError> {
         let transaction_digest = *transaction.digest();
 
@@ -442,18 +444,23 @@ impl AuthorityState {
 
         let owned_objects = input_objects.filter_owned_objects();
 
-        let signed_transaction =
-            VerifiedSignedTransaction::new(self.epoch(), transaction, self.name, &*self.secret);
+        let signed_transaction = VerifiedSignedTransaction::new(
+            epoch_store.epoch(),
+            transaction,
+            self.name,
+            &*self.secret,
+        );
 
         // Check and write locks, to signed transaction, into the database
         // The call to self.set_transaction_lock checks the lock is not conflicting,
         // and returns ConflictingTransaction error in case there is a lock on a different
         // existing transaction.
-        self.set_transaction_lock(&owned_objects, signed_transaction)
+        self.set_transaction_lock(&owned_objects, signed_transaction, epoch_store)
             .await?;
 
         // Return the signed Transaction or maybe a cert.
-        self.make_transaction_info(&transaction_digest).await
+        self.make_transaction_info(&transaction_digest, epoch_store)
+            .await
     }
 
     /// Initiate a new transaction.
@@ -464,14 +471,14 @@ impl AuthorityState {
         let transaction_digest = *transaction.digest();
         debug!(tx_digest=?transaction_digest, "handle_transaction. Tx data: {:?}", &transaction.data().intent_message.value);
 
+        let epoch_store = self.epoch_store();
         // Ensure an idempotent answer. This is checked before the system_tx check so that
         // a validator is able to return the signed system tx if it was already signed locally.
-        if self
-            .database
-            .transaction_exists(self.epoch(), &transaction_digest)?
-        {
+        if epoch_store.get_transaction(&transaction_digest)?.is_some() {
             self.metrics.tx_already_processed.inc();
-            return self.make_transaction_info(&transaction_digest).await;
+            return self
+                .make_transaction_info(&transaction_digest, &epoch_store)
+                .await;
         }
 
         // CRITICAL! Validators should never sign an external system transaction.
@@ -487,21 +494,22 @@ impl AuthorityState {
         // The should_accept_user_certs check here is best effort, because
         // between a validator signs a tx and a cert is formed, the validator
         // could close the window.
-        if !self
-            .epoch_store()
+        if !epoch_store
             .get_reconfig_state_read_lock_guard()
             .should_accept_user_certs()
         {
             return Err(SuiError::ValidatorHaltedAtEpochEnd);
         }
 
-        let response = self.handle_transaction_impl(transaction).await;
+        let response = self
+            .handle_transaction_impl(transaction, &epoch_store)
+            .await;
         match response {
             Ok(r) => Ok(r),
             // If we see an error, it is possible that a certificate has already been processed.
             // In that case, we could still return Ok to avoid showing confusing errors.
             Err(err) => self
-                .get_tx_info_already_executed(&transaction_digest)
+                .get_tx_info_already_executed(&transaction_digest, &epoch_store)
                 .await?
                 .ok_or(err),
         }
@@ -526,6 +534,7 @@ impl AuthorityState {
         // giving us incorrect effects.
         // TODO: allow CertifiedTransactionEffects only
         effects: &TransactionEffectsEnvelope<S>,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
     ) -> SuiResult {
         let _metrics_guard = self
             .metrics
@@ -541,15 +550,14 @@ impl AuthorityState {
         );
 
         if certificate.contains_shared_object() {
-            self.database
-                .acquire_shared_locks_from_effects(certificate, effects.data())
+            epoch_store
+                .acquire_shared_locks_from_effects(certificate, effects.data(), &self.database)
                 .await?;
         }
 
         let expected_effects_digest = effects.digest();
 
-        self.enqueue_certificates_for_execution(vec![certificate.clone()])
-            .await?;
+        self.enqueue_certificates_for_execution(vec![certificate.clone()], epoch_store)?;
 
         let observed_effects = self
             .database
@@ -579,23 +587,25 @@ impl AuthorityState {
     pub(crate) async fn execute_certificate(
         &self,
         certificate: &VerifiedCertificate,
-    ) -> SuiResult<VerifiedTransactionInfoResponse> {
+        epoch_store: &Arc<AuthorityPerEpochStore>,
+    ) -> SuiResult<SignedTransactionEffects> {
         let _metrics_guard = self.metrics.execute_certificate_latency.start_timer();
         let tx_digest = *certificate.digest();
         debug!(?tx_digest, "execute_certificate");
 
         self.metrics.total_cert_attempts.inc();
 
-        if certificate.contains_shared_object() && !self.consensus_message_processed(certificate)? {
+        if certificate.contains_shared_object()
+            && !epoch_store.is_tx_cert_consensus_message_processed(certificate)?
+        {
             return Err(SuiError::CertificateNotSequencedError {
                 digest: *certificate.digest(),
             });
         }
 
-        self.enqueue_certificates_for_execution(vec![certificate.clone()])
-            .await?;
+        self.enqueue_certificates_for_execution(vec![certificate.clone()], epoch_store)?;
 
-        self.notify_read_transaction_info(certificate).await
+        self.notify_read_effects(certificate).await
     }
 
     /// Internal logic to execute a certificate.
@@ -613,7 +623,8 @@ impl AuthorityState {
     pub(crate) async fn try_execute_immediately(
         &self,
         certificate: &VerifiedCertificate,
-    ) -> SuiResult<VerifiedTransactionInfoResponse> {
+        epoch_store: &Arc<AuthorityPerEpochStore>,
+    ) -> SuiResult<SignedTransactionEffects> {
         let _metrics_guard = self.metrics.internal_execution_latency.start_timer();
         let tx_digest = *certificate.digest();
         debug!(?tx_digest, "execute_certificate_internal");
@@ -633,13 +644,12 @@ impl AuthorityState {
             ?tx_digest,
             tx_kind = certificate.data().intent_message.value.kind_as_str()
         );
-        let epoch_store = self.epoch_store();
         let tx_guard = epoch_store
             .acquire_tx_guard(certificate)
             .instrument(span)
             .await?;
 
-        self.process_certificate(tx_guard, certificate)
+        self.process_certificate(tx_guard, certificate, epoch_store)
             .await
             .tap_err(|e| debug!(?tx_digest, "process_certificate failed: {e}"))
     }
@@ -649,26 +659,22 @@ impl AuthorityState {
     pub async fn try_execute_for_test(
         &self,
         certificate: &VerifiedCertificate,
-    ) -> SuiResult<VerifiedTransactionInfoResponse> {
-        self.try_execute_immediately(certificate).await
+    ) -> SuiResult<SignedTransactionEffects> {
+        self.try_execute_immediately(certificate, &self.epoch_store_for_testing())
+            .await
     }
 
-    pub async fn notify_read_transaction_info(
+    pub async fn notify_read_effects(
         &self,
         certificate: &VerifiedCertificate,
-    ) -> SuiResult<VerifiedTransactionInfoResponse> {
+    ) -> SuiResult<SignedTransactionEffects> {
         let tx_digest = *certificate.digest();
-        let effects = self
+        Ok(self
             .database
             .notify_read_effects(vec![tx_digest])
             .await?
             .pop()
-            .expect("notify_read_effects should return exactly 1 element");
-        Ok(VerifiedTransactionInfoResponse {
-            signed_transaction: self.database.get_transaction(&tx_digest)?,
-            certified_transaction: Some(certificate.clone()),
-            signed_effects: Some(effects),
-        })
+            .expect("notify_read_effects should return exactly 1 element"))
     }
 
     #[instrument(level = "trace", skip_all)]
@@ -682,6 +688,7 @@ impl AuthorityState {
         transaction_digest: &TransactionDigest,
         // inputs: &[(InputObjectKind, Object)],
         shared_object_refs: &[ObjectRef],
+        epoch_store: &Arc<AuthorityPerEpochStore>,
     ) -> Result<(), SuiError> {
         debug!("Validating shared object sequence numbers from consensus...");
 
@@ -691,8 +698,7 @@ impl AuthorityState {
             "we just checked that there are share objects yet none found?"
         );
 
-        let shared_locks: HashMap<_, _> = self
-            .epoch_store()
+        let shared_locks: HashMap<_, _> = epoch_store
             .get_shared_locks(transaction_digest)?
             .into_iter()
             .collect();
@@ -738,32 +744,40 @@ impl AuthorityState {
         &self,
         tx_guard: CertTxGuard<'_>,
         certificate: &VerifiedCertificate,
-    ) -> SuiResult<VerifiedTransactionInfoResponse> {
+        epoch_store: &Arc<AuthorityPerEpochStore>,
+    ) -> SuiResult<SignedTransactionEffects> {
         let digest = *certificate.digest();
         // The cert could have been processed by a concurrent attempt of the same cert, so check if
         // the effects have already been written.
         // If the cert is finalized in a previous epoch, it will be re-signed
         // with current epoch info and returned.
-        if let Some(info) = self.get_tx_info_already_executed(&digest).await? {
+        if let Some(signed_effects) =
+            self.get_signed_effects_and_maybe_resign(epoch_store.epoch(), &digest)?
+        {
             tx_guard.release();
-            return Ok(info);
+            return Ok(signed_effects);
         }
-
+        let execution_guard = self
+            .database
+            .execution_lock_for_certificate(certificate)
+            .await;
         // Any caller that verifies the signatures on the certificate will have already checked the
         // epoch. But paths that don't verify sigs (e.g. execution from checkpoint, reading from db)
         // present the possibility of an epoch mismatch. If this cert is not finalzied in previous
         // epoch, then it's invalid.
-        if certificate.epoch() != self.epoch() {
-            tx_guard.release();
-            return Err(SuiError::WrongEpoch {
-                expected_epoch: self.epoch(),
-                actual_epoch: certificate.epoch(),
-            });
-        }
+        let execution_guard = match execution_guard {
+            Ok(execution_guard) => execution_guard,
+            Err(err) => {
+                tx_guard.release();
+                return Err(err);
+            }
+        };
 
         // first check to see if we have already executed and committed the tx
         // to the WAL
-        let epoch_store = self.epoch_store();
+        // This should be correct because of order execution epoch and epoch store change
+        // See AuthorityState::reconfigure() method for order of lock and store update
+        assert_eq!(*execution_guard, epoch_store.epoch());
         if let Some((inner_temporary_storage, signed_effects)) =
             epoch_store.wal().get_execution_output(&digest)?
         {
@@ -773,6 +787,7 @@ impl AuthorityState {
                     inner_temporary_storage,
                     signed_effects,
                     tx_guard,
+                    execution_guard,
                 )
                 .await;
         }
@@ -782,7 +797,7 @@ impl AuthorityState {
         // this function occur before we have written anything to the db, so we commit the tx
         // guard and rely on the client to retry the tx (if it was transient).
         let (inner_temporary_store, signed_effects) =
-            match self.prepare_certificate(certificate).await {
+            match self.prepare_certificate(certificate, epoch_store).await {
                 Err(e) => {
                     debug!(name = ?self.name, ?digest, "Error preparing transaction: {e}");
                     tx_guard.release();
@@ -807,8 +822,14 @@ impl AuthorityState {
         #[cfg(any(test, msim))]
         tokio::task::yield_now().await;
 
-        self.commit_cert_and_notify(certificate, inner_temporary_store, signed_effects, tx_guard)
-            .await
+        self.commit_cert_and_notify(
+            certificate,
+            inner_temporary_store,
+            signed_effects,
+            tx_guard,
+            execution_guard,
+        )
+        .await
     }
 
     async fn commit_cert_and_notify(
@@ -817,7 +838,8 @@ impl AuthorityState {
         inner_temporary_store: InnerTemporaryStore,
         signed_effects: SignedTransactionEffects,
         tx_guard: CertTxGuard<'_>,
-    ) -> SuiResult<VerifiedTransactionInfoResponse> {
+        _execution_guard: ExecutionLockReadGuard<'_>,
+    ) -> SuiResult<SignedTransactionEffects> {
         let digest = *certificate.digest();
         let input_object_count = inner_temporary_store.objects.len();
         let shared_object_count = signed_effects.data().shared_objects.len();
@@ -842,9 +864,7 @@ impl AuthorityState {
         //
         // REQUIRED: this must be called before tx_guard.commit_tx() (below), to ensure
         // TransactionManager can get the notifications after the node crashes and restarts.
-        self.transaction_manager
-            .objects_committed(output_keys)
-            .await;
+        self.transaction_manager.objects_committed(output_keys);
 
         // commit_certificate finished, the tx is fully committed to the store.
         tx_guard.commit_tx();
@@ -873,11 +893,7 @@ impl AuthorityState {
             .batch_size
             .observe(certificate.data().intent_message.value.kind.batch_size() as f64);
 
-        Ok(VerifiedTransactionInfoResponse {
-            signed_transaction: self.database.get_transaction(&digest)?,
-            certified_transaction: Some(certificate.clone()),
-            signed_effects: Some(signed_effects),
-        })
+        Ok(signed_effects)
     }
 
     /// prepare_certificate validates the transaction input, and executes the certificate,
@@ -893,6 +909,7 @@ impl AuthorityState {
     async fn prepare_certificate(
         &self,
         certificate: &VerifiedCertificate,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
     ) -> SuiResult<(InnerTemporaryStore, SignedTransactionEffects)> {
         let _metrics_guard = self.metrics.prepare_certificate_latency.start_timer();
         let (gas_status, input_objects) =
@@ -918,7 +935,7 @@ impl AuthorityState {
             // only be executed at a time when consensus is turned off.
             // TODO: Add some assert here to make sure consensus is indeed off with
             // is_change_epoch_tx.
-            self.check_shared_locks(certificate.digest(), &shared_object_refs)
+            self.check_shared_locks(certificate.digest(), &shared_object_refs, epoch_store)
                 .await?;
         }
 
@@ -940,18 +957,18 @@ impl AuthorityState {
                 &self.move_vm,
                 &self._native_functions,
                 gas_status,
-                self.epoch(),
+                epoch_store.epoch(),
             );
 
         // TODO: Distribute gas charge and rebate, which can be retrieved from effects.
         let signed_effects =
-            SignedTransactionEffects::new(self.epoch(), effects, &*self.secret, self.name);
+            SignedTransactionEffects::new(epoch_store.epoch(), effects, &*self.secret, self.name);
         Ok((inner_temp_store, signed_effects))
     }
 
     /// Notifies TransactionManager about an executed certificate.
-    pub async fn certificate_executed(&self, digest: &TransactionDigest) {
-        self.transaction_manager.certificate_executed(digest).await
+    pub fn certificate_executed(&self, digest: &TransactionDigest) {
+        self.transaction_manager.certificate_executed(digest)
     }
 
     pub async fn dry_exec_transaction(
@@ -1058,10 +1075,11 @@ impl AuthorityState {
     pub async fn get_tx_info_already_executed(
         &self,
         digest: &TransactionDigest,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
     ) -> SuiResult<Option<VerifiedTransactionInfoResponse>> {
         if self.database.effects_exists(digest)? {
             debug!("Transaction {digest:?} already executed");
-            Ok(Some(self.make_transaction_info(digest).await?))
+            Ok(Some(self.make_transaction_info(digest, epoch_store).await?))
         } else {
             Ok(None)
         }
@@ -1118,7 +1136,7 @@ impl AuthorityState {
         let mut deleted_dynamic_fields = vec![];
         for (id, _, _) in &effects.deleted {
             let Some(old_version) = modified_at_version.get(id) else{
-                error!("Error processing object owner index for tx [{}], cannot find modified at version for deleted object [{id}].", effects.transaction_digest);
+                error!("Error processing object owner index for tx [{:?}], cannot find modified at version for deleted object [{id}].", effects.transaction_digest);
                 continue;
             };
             match self.get_owner_at_version(id, *old_version)? {
@@ -1138,11 +1156,11 @@ impl AuthorityState {
             // For mutated objects, retrieve old owner and delete old index if there is a owner change.
             if let WriteKind::Mutate = kind {
                 let Some(old_version) = modified_at_version.get(id) else{
-                        error!("Error processing object owner index for tx [{}], cannot find modified at version for mutated object [{id}].", effects.transaction_digest);
+                        error!("Error processing object owner index for tx [{:?}], cannot find modified at version for mutated object [{id}].", effects.transaction_digest);
                         continue;
                     };
                 let Some(old_object) = self.database.get_object_by_key(id, *old_version)? else {
-                        error!("Error processing object owner index for tx [{}], cannot find object [{id}] at version [{old_version}].", effects.transaction_digest);
+                        error!("Error processing object owner index for tx [{:?}], cannot find object [{id}] at version [{old_version}].", effects.transaction_digest);
                         continue;
                     };
                 if &old_object.owner != owner {
@@ -1264,13 +1282,12 @@ impl AuthorityState {
         }
 
         // Load cert and effects.
-        let info = self.make_transaction_info(digest).await?;
+        let info = (
+            self.database.get_certified_transaction(digest)?,
+            self.database.get_signed_effects(digest)?,
+        );
         let (cert, effects) = match info {
-            VerifiedTransactionInfoResponse {
-                certified_transaction: Some(cert),
-                signed_effects: Some(effects),
-                ..
-            } => (cert, effects),
+            (Some(cert), Some(effects)) => (cert, effects),
             _ => {
                 return Err(SuiError::CertificateNotfound {
                     certificate_digest: *digest,
@@ -1329,7 +1346,7 @@ impl AuthorityState {
         &self,
         request: TransactionInfoRequest,
     ) -> Result<VerifiedTransactionInfoResponse, SuiError> {
-        self.make_transaction_info(&request.transaction_digest)
+        self.make_transaction_info(&request.transaction_digest, &self.epoch_store())
             .await
     }
 
@@ -1490,9 +1507,11 @@ impl AuthorityState {
         });
         let metrics = Arc::new(AuthorityMetrics::new(prometheus_registry));
         let (tx_ready_certificates, rx_ready_certificates) = unbounded_channel();
-        let transaction_manager = Arc::new(
-            TransactionManager::new(store.clone(), tx_ready_certificates, metrics.clone()).await,
-        );
+        let transaction_manager = Arc::new(TransactionManager::new(
+            store.clone(),
+            tx_ready_certificates,
+            metrics.clone(),
+        ));
 
         let state = Arc::new(AuthorityState {
             name,
@@ -1518,7 +1537,7 @@ impl AuthorityState {
         // Process tx recovery log first, so that checkpoint recovery (below)
         // doesn't observe partially-committed txes.
         state
-            .process_tx_recovery_log(None)
+            .process_tx_recovery_log(None, &state.epoch_store())
             .await
             .expect("Could not fully process recovery log at startup!");
 
@@ -1600,18 +1619,22 @@ impl AuthorityState {
     }
 
     /// Adds certificates to the pending certificate store and transaction manager for ordered execution.
-    pub async fn enqueue_certificates_for_execution(
+    pub fn enqueue_certificates_for_execution(
         &self,
         certs: Vec<VerifiedCertificate>,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
     ) -> SuiResult<()> {
-        self.epoch_store().insert_pending_certificates(&certs)?;
-        self.transaction_manager.enqueue(certs).await
+        epoch_store.insert_pending_certificates(&certs)?;
+        self.transaction_manager.enqueue(certs)
     }
 
     // Continually pop in-progress txes from the WAL and try to drive them to completion.
-    pub async fn process_tx_recovery_log(&self, limit: Option<usize>) -> SuiResult {
+    pub async fn process_tx_recovery_log(
+        &self,
+        limit: Option<usize>,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
+    ) -> SuiResult {
         let mut limit = limit.unwrap_or(usize::MAX);
-        let epoch_store = self.epoch_store();
         while limit > 0 {
             limit -= 1;
             if let Some((cert, tx_guard)) = epoch_store.wal().read_one_recoverable_tx().await? {
@@ -1634,7 +1657,10 @@ impl AuthorityState {
                     continue;
                 }
 
-                if let Err(e) = self.process_certificate(tx_guard, &cert.into()).await {
+                if let Err(e) = self
+                    .process_certificate(tx_guard, &cert.into(), epoch_store)
+                    .await
+                {
                     warn!(?digest, "Failed to process in-progress certificate: {e}");
                 }
             } else {
@@ -1685,10 +1711,15 @@ impl AuthorityState {
 
         self.committee_store.insert_new_committee(&new_committee)?;
         let db = self.db();
+        let mut execution_lock = db.execution_lock_for_reconfiguration().await;
         db.revert_uncommitted_epoch_transactions().await?;
-        db.perpetual_tables
-            .set_recovery_epoch(new_committee.epoch)?;
+        let new_epoch = new_committee.epoch;
+        db.perpetual_tables.set_recovery_epoch(new_epoch)?;
         db.reopen_epoch_db(new_committee).await;
+        *execution_lock = new_epoch;
+        // drop execution_lock after epoch store was updated
+        // see also assert in AuthorityState::process_certificate
+        // on the epoch store and execution lock epoch match
         Ok(())
     }
 
@@ -1701,6 +1732,11 @@ impl AuthorityState {
         self.database.epoch_store()
     }
 
+    // Load the epoch store, should be used in tests only.
+    pub fn epoch_store_for_testing(&self) -> Guard<Arc<AuthorityPerEpochStore>> {
+        self.database.epoch_store()
+    }
+
     pub fn load_epoch_store(
         &self,
         intended_epoch: EpochId,
@@ -1710,11 +1746,6 @@ impl AuthorityState {
 
     pub fn clone_committee(&self) -> Committee {
         self.epoch_store().committee().clone()
-    }
-
-    // This method can only be called from ConsensusAdapter::begin_reconfiguration
-    pub fn close_user_certs(&self, lock_guard: parking_lot::RwLockWriteGuard<'_, ReconfigState>) {
-        self.epoch_store().close_user_certs(lock_guard)
     }
 
     pub(crate) async fn get_object(
@@ -2041,10 +2072,27 @@ impl AuthorityState {
     pub async fn make_transaction_info(
         &self,
         transaction_digest: &TransactionDigest,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
     ) -> Result<VerifiedTransactionInfoResponse, SuiError> {
-        let mut info = self
-            .database
-            .get_signed_transaction_info(transaction_digest)?;
+        Ok(VerifiedTransactionInfoResponse {
+            signed_transaction: epoch_store.get_transaction(transaction_digest)?,
+            certified_transaction: self
+                .database
+                .get_certified_transaction(transaction_digest)?,
+            signed_effects: self
+                .get_signed_effects_and_maybe_resign(epoch_store.epoch(), transaction_digest)?,
+        })
+    }
+
+    /// Get the signed effects of the given transaction. If the effects was signed in a previous
+    /// epoch, re-sign it so that the caller is able to form a cert of the effects in the current
+    /// epoch.
+    pub fn get_signed_effects_and_maybe_resign(
+        &self,
+        cur_epoch: EpochId,
+        transaction_digest: &TransactionDigest,
+    ) -> SuiResult<Option<SignedTransactionEffects>> {
+        let effects = self.database.get_signed_effects(transaction_digest)?;
         // If the transaction was executed in previous epochs, the validator will
         // re-sign the effects with new current epoch so that a client is always able to
         // obtain an effects certificate at the current epoch.
@@ -2073,9 +2121,8 @@ impl AuthorityState {
         // the epoch field in AuthoritySignInfo is overloaded both to identify the provenance of
         // the authority's signature, as well as to identify in which epoch the transaction was
         // executed.
-        if let Some(effects) = info.signed_effects.take() {
-            let cur_epoch = self.epoch();
-            let new_effects = if effects.epoch() < cur_epoch {
+        Ok(effects.map(|effects| {
+            if effects.epoch() < cur_epoch {
                 debug!(
                     effects_epoch=?effects.epoch(),
                     ?cur_epoch,
@@ -2089,10 +2136,8 @@ impl AuthorityState {
                 )
             } else {
                 effects
-            };
-            info.signed_effects = Some(new_effects);
-        }
-        Ok(info)
+            }
+        }))
     }
 
     fn make_account_info(&self, account: SuiAddress) -> Result<AccountInfoResponse, SuiError> {
@@ -2112,10 +2157,35 @@ impl AuthorityState {
         &self,
         mutable_input_objects: &[ObjectRef],
         signed_transaction: VerifiedSignedTransaction,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
     ) -> Result<(), SuiError> {
-        self.database
-            .lock_and_write_transaction(self.epoch(), mutable_input_objects, signed_transaction)
+        self.lock_and_write_transaction(mutable_input_objects, signed_transaction, epoch_store)
             .await
+    }
+
+    /// Acquires the transaction lock for a specific transaction, writing the transaction
+    /// to the transaction column family if acquiring the lock succeeds.
+    /// The lock service is used to atomically acquire locks.
+    async fn lock_and_write_transaction(
+        &self,
+        owned_input_objects: &[ObjectRef],
+        transaction: VerifiedSignedTransaction,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
+    ) -> Result<(), SuiError> {
+        let tx_digest = *transaction.digest();
+
+        // Acquire the lock on input objects
+        self.database
+            .acquire_transaction_locks(epoch_store.epoch(), owned_input_objects, tx_digest)
+            .await?;
+
+        // TODO: we should have transaction insertion be atomic with lock acquisition, or retry.
+        // For now write transactions after because if we write before, there is a chance the lock can fail
+        // and this can cause invalid transactions to be inserted in the table.
+        // https://github.com/MystenLabs/sui/issues/1990
+        epoch_store.insert_transaction(transaction)?;
+
+        Ok(())
     }
 
     /// Commit effects of transaction execution to data store.
@@ -2148,18 +2218,6 @@ impl AuthorityState {
             .set(self.database.effects_notify_read.num_pending() as i64);
 
         Ok(())
-    }
-
-    /// Check whether certificate was processed by consensus.
-    /// For shared lock certificates, if this function returns true means shared locks for this certificate are set
-    pub fn consensus_message_processed(
-        &self,
-        certificate: &CertifiedTransaction,
-    ) -> SuiResult<bool> {
-        self.epoch_store()
-            .is_consensus_message_processed(&ConsensusTransactionKey::Certificate(
-                *certificate.digest(),
-            ))
     }
 
     /// Get a read reference to an object/seq lock
@@ -2217,11 +2275,12 @@ impl AuthorityState {
 
     pub async fn create_advance_epoch_tx_cert(
         &self,
-        next_epoch: EpochId,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
         gas_cost_summary: &GasCostSummary,
         timeout: Duration,
         transaction_certifier: &dyn TransactionCertifier,
     ) -> anyhow::Result<VerifiedCertificate> {
+        let next_epoch = epoch_store.epoch() + 1;
         debug!(
             ?next_epoch,
             computation_cost=?gas_cost_summary.computation_cost,
@@ -2236,10 +2295,11 @@ impl AuthorityState {
             gas_cost_summary.storage_rebate,
         );
         // If we fail to sign the transaction locally for whatever reason, it's not recoverable.
-        self.handle_transaction_impl(tx.clone()).await?;
+        self.handle_transaction_impl(tx.clone(), epoch_store)
+            .await?;
         debug!(?next_epoch, "Successfully signed advance epoch transaction");
         transaction_certifier
-            .create_certificate(&tx, self, timeout)
+            .create_certificate(&tx, &self.database, &self.committee_store, timeout)
             .await
     }
 }

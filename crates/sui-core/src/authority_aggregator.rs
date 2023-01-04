@@ -298,6 +298,36 @@ impl<A> AuthorityAggregator<A> {
         }
     }
 
+    pub fn new_with_metrics(
+        committee: Committee,
+        committee_store: Arc<CommitteeStore>,
+        authority_clients: BTreeMap<AuthorityName, A>,
+        safe_client_metrics_base: SafeClientMetricsBase,
+        auth_agg_metrics: AuthAggMetrics,
+    ) -> Self {
+        Self {
+            committee,
+            authority_clients: authority_clients
+                .into_iter()
+                .map(|(name, api)| {
+                    (
+                        name,
+                        SafeClient::new(
+                            api,
+                            committee_store.clone(),
+                            name,
+                            SafeClientMetrics::new(&safe_client_metrics_base, name),
+                        ),
+                    )
+                })
+                .collect(),
+            metrics: auth_agg_metrics,
+            safe_client_metrics_base: Arc::new(safe_client_metrics_base),
+            timeouts: Default::default(),
+            committee_store,
+        }
+    }
+
     /// This function recreates AuthorityAggregator with the given committee.
     /// It also updates committee store which impacts other of its references.
     /// If it is called on a Validator/Fullnode, it **may** interleave with the the authority active's
@@ -383,23 +413,29 @@ impl<A> AuthorityAggregator<A> {
 }
 
 impl AuthorityAggregator<NetworkAuthorityClient> {
-    /// Create a new network authority aggregator by reading the committee and network address
-    /// information from the system state object on-chain.
+    /// Create a new network authority aggregator by reading the committee and
+    /// network address information from the system state object on-chain.
+    /// This function needs metrics parameters because registry will panic
+    /// if we attempt to register already-registered metrics again.
     pub fn new_from_system_state(
         store: &Arc<AuthorityStore>,
         committee_store: &Arc<CommitteeStore>,
-        prometheus_registry: &Registry,
+        safe_client_metrics_base: SafeClientMetricsBase,
+        auth_agg_metrics: AuthAggMetrics,
     ) -> anyhow::Result<Self> {
         let net_config = default_mysten_network_config();
         let sui_system_state = store.get_sui_system_state_object()?;
-
+        // TODO: the function returns on URL parsing errors. In this case we should
+        // tolerate it as long as we have 2f+1 good validators.
+        // GH issue: https://github.com/MystenLabs/sui/issues/7019
         let authority_clients =
             make_network_authority_client_sets_from_system_state(&sui_system_state, &net_config)?;
-        Ok(Self::new(
+        Ok(Self::new_with_metrics(
             sui_system_state.get_current_epoch_committee().committee,
             committee_store.clone(),
             authority_clients,
-            prometheus_registry,
+            safe_client_metrics_base,
+            auth_agg_metrics,
         ))
     }
 }
@@ -420,7 +456,8 @@ pub trait TransactionCertifier: Sync + Send + 'static {
     async fn create_certificate(
         &self,
         transaction: &VerifiedTransaction,
-        self_state: &AuthorityState,
+        self_store: &Arc<AuthorityStore>,
+        committee_store: &Arc<CommitteeStore>,
         timeout: Duration,
     ) -> anyhow::Result<VerifiedCertificate>;
 }
@@ -446,16 +483,19 @@ impl TransactionCertifier for NetworkTransactionCertifier {
     async fn create_certificate(
         &self,
         transaction: &VerifiedTransaction,
-        self_state: &AuthorityState,
+        self_store: &Arc<AuthorityStore>,
+        committee_store: &Arc<CommitteeStore>,
         timeout: Duration,
     ) -> anyhow::Result<VerifiedCertificate> {
+        let registry = Registry::new();
         let net = AuthorityAggregator::new_from_system_state(
-            &self_state.db(),
-            self_state.committee_store(),
-            &Registry::new(),
+            self_store,
+            committee_store,
+            SafeClientMetricsBase::new(&registry),
+            AuthAggMetrics::new(&registry),
         )?;
 
-        net.authorty_ask_for_cert_with_retry_and_timeout(transaction, self_state, timeout)
+        net.authorty_ask_for_cert_with_retry_and_timeout(transaction, self_store, timeout)
             .await
     }
 }
@@ -465,10 +505,11 @@ impl TransactionCertifier for LocalTransactionCertifier {
     async fn create_certificate(
         &self,
         transaction: &VerifiedTransaction,
-        self_state: &AuthorityState,
+        self_store: &Arc<AuthorityStore>,
+        committee_store: &Arc<CommitteeStore>,
         timeout: Duration,
     ) -> anyhow::Result<VerifiedCertificate> {
-        let sui_system_state = self_state.get_sui_system_state_object()?;
+        let sui_system_state = self_store.get_sui_system_state_object()?;
         let committee = sui_system_state.get_current_epoch_committee().committee;
         let clients: BTreeMap<_, _> = committee.names().map(|name|
             // unwrap is fine because LocalAuthorityClient is only used for testing.
@@ -476,12 +517,12 @@ impl TransactionCertifier for LocalTransactionCertifier {
         ).collect();
         let net = AuthorityAggregator::new(
             committee,
-            self_state.committee_store().clone(),
+            committee_store.clone(),
             clients,
             &Registry::new(),
         );
 
-        net.authorty_ask_for_cert_with_retry_and_timeout(transaction, self_state, timeout)
+        net.authorty_ask_for_cert_with_retry_and_timeout(transaction, self_store, timeout)
             .await
     }
 }
@@ -1260,29 +1301,30 @@ where
                                 // This should start happen less over time as we are working on
                                 // eliminating this on honest validators.
                                 // Log a warning to keep track.
-                                if let Some(inner_certificate) = &ret.certified_transaction {
-                                    warn!(
+                                let error = if let Some(inner_certificate) = &ret.certified_transaction {
+                                    debug!(
                                         ?tx_digest,
                                         name=?name.concise(),
                                         expected_epoch=?self.committee.epoch,
                                         returned_epoch=?inner_certificate.epoch(),
                                         "Returned certificate is from wrong epoch"
                                     );
-                                }
-                                if let Some(inner_signed) = &ret.signed_transaction {
-                                    warn!(
+                                    SuiError::WrongEpoch { expected_epoch: self.committee.epoch, actual_epoch: inner_certificate.epoch() }
+                                } else if let Some(inner_signed) = &ret.signed_transaction {
+                                    debug!(
                                         ?tx_digest,
                                         name=?name.concise(),
                                         expected_epoch=?self.committee.epoch,
                                         returned_epoch=?inner_signed.epoch(),
                                         "Returned signed transaction is from wrong epoch"
                                     );
-                                }
-                                state.errors.push(
+                                    SuiError::WrongEpoch { expected_epoch: self.committee.epoch, actual_epoch: inner_signed.epoch() }
+                                } else {
                                     SuiError::UnexpectedResultFromValidatorHandleTransaction {
                                         err: format!("{:?}", ret),
-                                    },
-                                );
+                                    }
+                                };
+                                state.errors.push(error);
                                 state.bad_stake += weight; // This is the bad stake counter
                             }
                         };
@@ -1401,12 +1443,11 @@ where
                         // We aggregate the effects response, until we have more than 2f
                         // and return.
                         match result {
-                            Ok(VerifiedTransactionInfoResponse {
-                                signed_effects: Some(inner_effects),
-                                ..
+                            Ok(VerifiedHandleCertificateResponse {
+                                signed_effects,
                             }) => {
                                 // Note: here we aggregate votes by the hash of the effects structure
-                                if state.effects_map.add(inner_effects, weight, &self.committee) {
+                                if state.effects_map.add(signed_effects, weight, &self.committee) {
                                     debug!(
                                         tx_digest = ?tx_digest,
                                         "Got quorum for validators handle_certificate."
@@ -1424,7 +1465,6 @@ where
                                     return Ok(ReduceOutput::End(state));
                                 }
                             }
-                            _ => { unreachable!("SafeClient should have ruled out this case") }
                         }
                         Ok(ReduceOutput::Continue(state))
                     })
@@ -1748,25 +1788,21 @@ where
                     Box::pin(async move {
                         state.cumulative_weight += weight;
                         match result {
-                            Ok(TransactionInfoResponse {
-                                signed_effects: Some(effects),
-                                ..
+                            Ok(VerifiedHandleCertificateResponse {
+                                signed_effects,
                             }) => {
                                 state.good_weight += weight;
                                 trace!(name=?name.concise(), ?weight, "successfully executed cert on peer");
-                                let entry = state.digests.entry(*effects.digest()).or_insert(0);
+                                let entry = state.digests.entry(*signed_effects.digest()).or_insert(0);
                                 *entry += weight;
 
                                 if *entry >= validity {
-                                    state.true_effects = Some(effects);
+                                    state.true_effects = Some(signed_effects);
                                     return Ok(ReduceOutput::End(state));
                                 }
                             }
                             Err(e) => {
                                 state.errors.push((name, e));
-                            }
-                            _ => {
-                                unreachable!("SafeClient should have ruled out this case")
                             }
                         }
 
@@ -1804,20 +1840,14 @@ where
     pub async fn authorty_ask_for_cert_with_retry_and_timeout(
         &self,
         transaction: &VerifiedTransaction,
-        state: &AuthorityState,
+        self_store: &Arc<AuthorityStore>,
         timeout: Duration,
     ) -> anyhow::Result<VerifiedCertificate> {
         let result = tokio::time::timeout(timeout, async {
             loop {
                 // We may have already executed this transaction somewhere else.
                 // If so, no need to try to get it from the network.
-                if let Ok(Some(VerifiedTransactionInfoResponse {
-                    certified_transaction: Some(cert),
-                    ..
-                })) = state
-                    .get_tx_info_already_executed(transaction.digest())
-                    .await
-                {
+                if let Ok(Some(cert)) = self_store.get_certified_transaction(transaction.digest()) {
                     return cert;
                 }
                 match self.process_transaction(transaction.clone()).await {

@@ -37,7 +37,7 @@ pub trait AuthorityAPI {
     async fn handle_certificate(
         &self,
         certificate: CertifiedTransaction,
-    ) -> Result<TransactionInfoResponse, SuiError>;
+    ) -> Result<HandleCertificateResponse, SuiError>;
 
     /// Handle Account information requests for this account.
     async fn handle_account_info_request(
@@ -116,7 +116,7 @@ impl AuthorityAPI for NetworkAuthorityClient {
     async fn handle_certificate(
         &self,
         certificate: CertifiedTransaction,
-    ) -> Result<TransactionInfoResponse, SuiError> {
+    ) -> Result<HandleCertificateResponse, SuiError> {
         self.client()
             .handle_certificate(certificate)
             .await
@@ -182,6 +182,8 @@ impl AuthorityAPI for NetworkAuthorityClient {
     }
 }
 
+// This function errs on URL parsing error. This may happen
+// when a validator provides a bad URL.
 pub fn make_network_authority_client_sets_from_system_state(
     sui_system_state: &SuiSystemState,
     network_config: &Config,
@@ -296,7 +298,7 @@ impl AuthorityAPI for LocalAuthorityClient {
     async fn handle_certificate(
         &self,
         certificate: CertifiedTransaction,
-    ) -> Result<TransactionInfoResponse, SuiError> {
+    ) -> Result<HandleCertificateResponse, SuiError> {
         let state = self.state.clone();
         let fault_config = self.fault_config;
         spawn_monitored_task!(Self::handle_certificate(state, certificate, fault_config))
@@ -389,7 +391,7 @@ impl LocalAuthorityClient {
         state: Arc<AuthorityState>,
         certificate: CertifiedTransaction,
         fault_config: LocalAuthorityClientFaultConfig,
-    ) -> Result<TransactionInfoResponse, SuiError> {
+    ) -> Result<HandleCertificateResponse, SuiError> {
         if fault_config.fail_before_handle_confirmation {
             return Err(SuiError::GenericAuthorityError {
                 error: "Mock error before handle_confirmation_transaction".to_owned(),
@@ -398,21 +400,22 @@ impl LocalAuthorityClient {
         // Check existing effects before verifying the cert to allow querying certs finalized
         // from previous epochs.
         let tx_digest = *certificate.digest();
-        let response = match state.get_tx_info_already_executed(&tx_digest).await {
-            Ok(Some(response)) => response,
-            _ => {
-                let certificate = {
-                    let epoch_store = state.epoch_store();
-                    certificate.verify(epoch_store.committee())?
-                };
-                state.try_execute_immediately(&certificate).await?
-            }
-        };
+        let epoch_store = state.epoch_store();
+        let signed_effects =
+            match state.get_signed_effects_and_maybe_resign(epoch_store.epoch(), &tx_digest) {
+                Ok(Some(effects)) => effects,
+                _ => {
+                    let certificate = { certificate.verify(epoch_store.committee())? };
+                    state
+                        .try_execute_immediately(&certificate, &epoch_store)
+                        .await?
+                }
+            };
         if fault_config.fail_after_handle_confirmation {
             return Err(SuiError::GenericAuthorityError {
                 error: "Mock error after handle_confirmation_transaction".to_owned(),
             });
         }
-        Ok(response.into())
+        Ok(HandleCertificateResponse { signed_effects })
     }
 }
