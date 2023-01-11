@@ -15,9 +15,10 @@ use jsonrpsee::ws_client::{WsClient, WsClientBuilder};
 use crate::error::{RpcError, SuiRpcResult};
 use rpc_types::{SuiCertifiedTransaction, SuiParsedTransactionResponse, SuiTransactionEffects};
 use serde_json::Value;
+use sui_adapter::execution_mode::Normal;
 pub use sui_json as json;
 
-use crate::apis::{CoinReadApi, EventApi, QuorumDriver, ReadApi};
+use crate::apis::{CoinReadApi, EventApi, GovernanceApi, QuorumDriver, ReadApi};
 pub use sui_json_rpc_types as rpc_types;
 use sui_json_rpc_types::{GetRawObjectDataResponse, SuiObjectInfo};
 use sui_transaction_builder::{DataReader, TransactionBuilder};
@@ -42,11 +43,12 @@ pub struct TransactionExecutionResult {
 #[derive(Clone)]
 pub struct SuiClient {
     api: Arc<RpcClient>,
-    transaction_builder: TransactionBuilder,
+    transaction_builder: TransactionBuilder<Normal>,
     read_api: Arc<ReadApi>,
     coin_read_api: CoinReadApi,
     event_api: EventApi,
     quorum_driver: QuorumDriver,
+    governance_api: GovernanceApi,
 }
 
 pub(crate) struct RpcClient {
@@ -154,8 +156,9 @@ impl SuiClient {
         let read_api = Arc::new(ReadApi::new(api.clone()));
         let quorum_driver = QuorumDriver::new(api.clone());
         let event_api = EventApi::new(api.clone());
-        let transaction_builder = TransactionBuilder(read_api.clone());
+        let transaction_builder = TransactionBuilder::new(read_api.clone());
         let coin_read_api = CoinReadApi::new(api.clone());
+        let governance_api = GovernanceApi::new(api.clone());
 
         Ok(SuiClient {
             api,
@@ -164,6 +167,7 @@ impl SuiClient {
             coin_read_api,
             event_api,
             quorum_driver,
+            governance_api,
         })
     }
 
@@ -193,7 +197,7 @@ impl SuiClient {
 }
 
 impl SuiClient {
-    pub fn transaction_builder(&self) -> &TransactionBuilder {
+    pub fn transaction_builder(&self) -> &TransactionBuilder<Normal> {
         &self.transaction_builder
     }
     pub fn read_api(&self) -> &ReadApi {
@@ -207,6 +211,9 @@ impl SuiClient {
     }
     pub fn quorum_driver(&self) -> &QuorumDriver {
         &self.quorum_driver
+    }
+    pub fn governance_api(&self) -> &GovernanceApi {
+        &self.governance_api
     }
 }
 
