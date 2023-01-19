@@ -339,6 +339,10 @@ pub trait GovernanceReadApi {
     /// Return [SuiSystemState]
     #[method(name = "getSuiSystemState")]
     async fn get_sui_system_state(&self) -> RpcResult<SuiSystemState>;
+
+    /// Return the reference gas price for the network
+    #[method(name = "getReferenceGasPrice")]
+    async fn get_reference_gas_price(&self) -> RpcResult<u64>;
 }
 
 #[open_rpc(namespace = "sui", tag = "Transaction Builder API")]
@@ -562,7 +566,7 @@ pub trait RpcTransactionBuilder {
         gas_budget: u64,
     ) -> RpcResult<TransactionBytes>;
 
-    /// Withdraw some portion of a delegation from a validator's staking pool.
+    /// Withdraw a delegation from a validator's staking pool.
     #[method(name = "requestWithdrawDelegation")]
     async fn request_withdraw_delegation(
         &self,
@@ -572,8 +576,6 @@ pub trait RpcTransactionBuilder {
         delegation: ObjectID,
         /// StakedSui object ID
         staked_sui: ObjectID,
-        /// Principal amount to withdraw
-        principal_withdraw_amount: u64,
         /// gas object to be used in this transaction, node will pick one from the signer's possession if not provided
         gas: Option<ObjectID>,
         /// the gas budget, the transaction will fail if the gas cost exceed the budget
@@ -592,8 +594,6 @@ pub trait RpcTransactionBuilder {
         staked_sui: ObjectID,
         /// Validator to switch to
         new_validator_address: SuiAddress,
-        /// Switching stake amount
-        switch_pool_token_amount: u64,
         /// gas object to be used in this transaction, node will pick one from the signer's possession if not provided
         gas: Option<ObjectID>,
         /// the gas budget, the transaction will fail if the gas cost exceed the budget

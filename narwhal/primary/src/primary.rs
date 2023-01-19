@@ -16,10 +16,13 @@ use crate::{
 
 use anemo::{codegen::InboundRequestLayer, types::Address};
 use anemo::{types::PeerInfo, Network, PeerId};
+use anemo_tower::auth::RequireAuthorizationLayer;
+use anemo_tower::set_header::SetResponseHeaderLayer;
 use anemo_tower::{
-    auth::{AllowedPeers, RequireAuthorizationLayer},
+    auth::AllowedPeers,
     callback::CallbackLayer,
-    inflight_limit,
+    inflight_limit, rate_limit,
+    set_header::SetRequestHeaderLayer,
     trace::{DefaultMakeSpan, DefaultOnFailure, TraceLayer},
 };
 use async_trait::async_trait;
@@ -32,6 +35,7 @@ use fastcrypto::{
     traits::{EncodeDecodeBase64, KeyPair as _, ToFromBytes},
 };
 use multiaddr::{Multiaddr, Protocol};
+use network::epoch_filter::{AllowedEpoch, EPOCH_HEADER_KEY};
 use network::{failpoints::FailpointsMakeCallbackHandler, metrics::MetricsMakeCallbackHandler};
 use prometheus::Registry;
 use std::collections::HashMap;
@@ -218,7 +222,7 @@ impl Primary {
         let address = address
             .replace(0, |_protocol| Some(Protocol::Ip4(Ipv4Addr::UNSPECIFIED)))
             .unwrap();
-        let primary_service = PrimaryToPrimaryServer::new(PrimaryReceiverHandler {
+        let mut primary_service = PrimaryToPrimaryServer::new(PrimaryReceiverHandler {
             name: name.clone(),
             committee: committee.clone(),
             worker_cache: worker_cache.clone(),
@@ -236,7 +240,39 @@ impl Primary {
         // This is required for correctness.
         .add_layer_for_request_vote(InboundRequestLayer::new(
             inflight_limit::InflightLimitLayer::new(1, inflight_limit::WaitMode::ReturnError),
+        ))
+        // Allow only one inflight FetchCertificates RPC at a time per peer.
+        // These are already a batch request; an individual peer should never need more than one.
+        .add_layer_for_fetch_certificates(InboundRequestLayer::new(
+            inflight_limit::InflightLimitLayer::new(1, inflight_limit::WaitMode::ReturnError),
         ));
+
+        // Apply other rate limits from configuration as needed.
+        if let Some(limit) = parameters.anemo.send_message_rate_limit {
+            primary_service = primary_service.add_layer_for_send_message(InboundRequestLayer::new(
+                rate_limit::RateLimitLayer::new(
+                    governor::Quota::per_second(limit),
+                    rate_limit::WaitMode::Block,
+                ),
+            ));
+        }
+        if let Some(limit) = parameters.anemo.get_payload_availability_rate_limit {
+            primary_service = primary_service.add_layer_for_get_payload_availability(
+                InboundRequestLayer::new(rate_limit::RateLimitLayer::new(
+                    governor::Quota::per_second(limit),
+                    rate_limit::WaitMode::Block,
+                )),
+            );
+        }
+        if let Some(limit) = parameters.anemo.get_certificates_rate_limit {
+            primary_service = primary_service.add_layer_for_get_certificates(
+                InboundRequestLayer::new(rate_limit::RateLimitLayer::new(
+                    governor::Quota::per_second(limit),
+                    rate_limit::WaitMode::Block,
+                )),
+            );
+        }
+
         let worker_service = WorkerToPrimaryServer::new(WorkerReceiverHandler {
             tx_our_digests,
             payload_store: payload_store.clone(),
@@ -244,6 +280,8 @@ impl Primary {
         });
 
         let addr = network::multiaddr_to_address(&address).unwrap();
+
+        let epoch_string: String = committee.load().epoch.to_string();
 
         let our_worker_peer_ids = worker_cache
             .load()
@@ -256,10 +294,16 @@ impl Primary {
             // Add an Authorization Layer to ensure that we only service requests from our workers
             .route_layer(RequireAuthorizationLayer::new(AllowedPeers::new(
                 our_worker_peer_ids,
+            )))
+            .route_layer(RequireAuthorizationLayer::new(AllowedEpoch::new(
+                epoch_string.clone(),
             )));
 
         let routes = anemo::Router::new()
             .add_rpc_service(primary_service)
+            .route_layer(RequireAuthorizationLayer::new(AllowedEpoch::new(
+                epoch_string.clone(),
+            )))
             .merge(worker_to_primary_router);
 
         let service = ServiceBuilder::new()
@@ -272,6 +316,10 @@ impl Primary {
                 inbound_network_metrics,
             )))
             .layer(CallbackLayer::new(FailpointsMakeCallbackHandler::new()))
+            .layer(SetResponseHeaderLayer::overriding(
+                EPOCH_HEADER_KEY.parse().unwrap(),
+                epoch_string.clone(),
+            ))
             .service(routes);
 
         let outbound_layer = ServiceBuilder::new()
@@ -284,6 +332,10 @@ impl Primary {
                 outbound_network_metrics,
             )))
             .layer(CallbackLayer::new(FailpointsMakeCallbackHandler::new()))
+            .layer(SetRequestHeaderLayer::overriding(
+                EPOCH_HEADER_KEY.parse().unwrap(),
+                epoch_string,
+            ))
             .into_inner();
 
         let anemo_config = {
@@ -299,6 +351,7 @@ impl Primary {
             // Set a default timeout of 300s for all RPC requests
             config.inbound_request_timeout_ms = Some(300_000);
             config.outbound_request_timeout_ms = Some(300_000);
+            config.shutdown_idle_timeout_ms = Some(1_000);
             config
         };
 
@@ -813,10 +866,7 @@ impl PrimaryReceiverHandler {
                         "Authority {} submitted duplicate header for votes at epoch {}, round {}",
                         header.author, header.epoch, header.round
                     );
-                    self.metrics
-                        .votes_dropped_equivocation_protection
-                        .with_label_values(&[&header.epoch.to_string()])
-                        .inc();
+                    self.metrics.votes_dropped_equivocation_protection.inc();
                     return Err(DagError::AlreadyVoted(vote_info.vote_digest, header.round));
                 }
             }

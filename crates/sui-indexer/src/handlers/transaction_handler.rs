@@ -19,8 +19,6 @@ use sui_indexer::models::transactions::commit_transactions;
 use sui_indexer::utils::log_errors_to_pg;
 use sui_indexer::{get_pg_pool_connection, PgConnectionPool};
 
-use fastcrypto::encoding::{Base64, Encoding};
-
 const TRANSACTION_PAGE_SIZE: usize = 100;
 
 pub struct TransactionHandler {
@@ -48,20 +46,14 @@ impl TransactionHandler {
 
         let mut next_cursor = None;
         let txn_log = read_transaction_log(&mut pg_pool_conn)?;
-        if let Some(txn_digest) = txn_log.next_cursor_tx_digest {
-            let bytes = Base64::decode(txn_digest.as_str()).map_err(|e| {
-                IndexerError::TransactionDigestParsingError(format!(
-                    "Failed decoding bytes from txn digest string {:?} with error {:?}",
-                    txn_digest, e
-                ))
-            })?;
-            let digest = TransactionDigest::try_from(bytes.as_slice()).map_err(|e| {
+        if let Some(tx_dig) = txn_log.next_cursor_tx_digest {
+            let tx_digest = tx_dig.parse().map_err(|e| {
                 IndexerError::TransactionDigestParsingError(format!(
                     "Failed parsing transaction digest {:?} with error: {:?}",
-                    txn_digest, e
+                    tx_dig, e
                 ))
             })?;
-            next_cursor = Some(digest);
+            next_cursor = Some(tx_digest);
         }
 
         loop {
@@ -83,6 +75,11 @@ impl TransactionHandler {
                     .map(|tx_digest| self.get_transaction_response(tx_digest)),
             )
             .await;
+            info!(
+                "Received transaction responses for {} transactions with next cursor: {:?}",
+                txn_response_res_vec.len(),
+                page.next_cursor,
+            );
 
             let mut errors = vec![];
             let resp_vec: Vec<SuiTransactionResponse> = txn_response_res_vec
@@ -98,16 +95,16 @@ impl TransactionHandler {
             // This will cause duplidate run of the current batch, but will not cause duplidate rows
             // b/c of the uniqueness restriction of the table.
             if let Some(next_cursor_val) = page.next_cursor {
-                // canonical txn digest is Base64 encoded
-                commit_transction_log(&mut pg_pool_conn, Some(next_cursor_val.encode()))?;
+                // canonical txn digest is Base58 encoded
+                commit_transction_log(&mut pg_pool_conn, Some(next_cursor_val.base58_encode()))?;
+                self.transaction_handler_metrics
+                    .total_transactions_processed
+                    .inc_by(txn_count as u64);
                 next_cursor = page.next_cursor;
             }
             self.transaction_handler_metrics
                 .total_transaction_page_committed
                 .inc();
-            self.transaction_handler_metrics
-                .total_transactions_processed
-                .inc_by(txn_count as u64);
             if txn_count < TRANSACTION_PAGE_SIZE || page.next_cursor.is_none() {
                 sleep(Duration::from_secs_f32(0.1)).await;
             }

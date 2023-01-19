@@ -43,7 +43,9 @@ use strum::IntoStaticStr;
 use tap::Pipe;
 use tracing::debug;
 
-const BLOCKED_MOVE_FUNCTIONS: [(ObjectID, &str, &str); 2] = [
+const DUMMY_GAS_PRICE: u64 = 1;
+
+const BLOCKED_MOVE_FUNCTIONS: [(ObjectID, &str, &str); 3] = [
     (
         SUI_FRAMEWORK_OBJECT_ID,
         "sui_system",
@@ -53,6 +55,11 @@ const BLOCKED_MOVE_FUNCTIONS: [(ObjectID, &str, &str); 2] = [
         SUI_FRAMEWORK_OBJECT_ID,
         "sui_system",
         "request_remove_validator",
+    ),
+    (
+        SUI_FRAMEWORK_OBJECT_ID,
+        "sui_system",
+        "request_set_commission_rate",
     ),
 ];
 
@@ -619,7 +626,7 @@ pub struct TransactionData {
 }
 
 impl TransactionData {
-    pub fn new(
+    pub fn new_with_dummy_gas_price(
         kind: TransactionKind,
         sender: SuiAddress,
         gas_payment: ObjectRef,
@@ -628,14 +635,13 @@ impl TransactionData {
         TransactionData {
             kind,
             sender,
-            // TODO: Update local-txn-data-serializer.ts if `gas_price` is changed
-            gas_price: 1,
+            gas_price: DUMMY_GAS_PRICE,
             gas_payment,
             gas_budget,
         }
     }
 
-    pub fn new_with_gas_price(
+    pub fn new(
         kind: TransactionKind,
         sender: SuiAddress,
         gas_payment: ObjectRef,
@@ -651,7 +657,7 @@ impl TransactionData {
         }
     }
 
-    pub fn new_move_call(
+    pub fn new_move_call_with_dummy_gas_price(
         sender: SuiAddress,
         package: ObjectRef,
         module: Identifier,
@@ -661,6 +667,30 @@ impl TransactionData {
         arguments: Vec<CallArg>,
         gas_budget: u64,
     ) -> Self {
+        Self::new_move_call(
+            sender,
+            package,
+            module,
+            function,
+            type_arguments,
+            gas_payment,
+            arguments,
+            gas_budget,
+            DUMMY_GAS_PRICE,
+        )
+    }
+
+    pub fn new_move_call(
+        sender: SuiAddress,
+        package: ObjectRef,
+        module: Identifier,
+        function: Identifier,
+        type_arguments: Vec<TypeTag>,
+        gas_payment: ObjectRef,
+        arguments: Vec<CallArg>,
+        gas_budget: u64,
+        gas_price: u64,
+    ) -> Self {
         let kind = TransactionKind::Single(SingleTransactionKind::Call(MoveCall {
             package,
             module,
@@ -668,7 +698,24 @@ impl TransactionData {
             type_arguments,
             arguments,
         }));
-        Self::new(kind, sender, gas_payment, gas_budget)
+        Self::new(kind, sender, gas_payment, gas_budget, gas_price)
+    }
+
+    pub fn new_transfer_with_dummy_gas_price(
+        recipient: SuiAddress,
+        object_ref: ObjectRef,
+        sender: SuiAddress,
+        gas_payment: ObjectRef,
+        gas_budget: u64,
+    ) -> Self {
+        Self::new_transfer(
+            recipient,
+            object_ref,
+            sender,
+            gas_payment,
+            gas_budget,
+            DUMMY_GAS_PRICE,
+        )
     }
 
     pub fn new_transfer(
@@ -677,12 +724,30 @@ impl TransactionData {
         sender: SuiAddress,
         gas_payment: ObjectRef,
         gas_budget: u64,
+        gas_price: u64,
     ) -> Self {
         let kind = TransactionKind::Single(SingleTransactionKind::TransferObject(TransferObject {
             recipient,
             object_ref,
         }));
-        Self::new(kind, sender, gas_payment, gas_budget)
+        Self::new(kind, sender, gas_payment, gas_budget, gas_price)
+    }
+
+    pub fn new_transfer_sui_with_dummy_gas_price(
+        recipient: SuiAddress,
+        sender: SuiAddress,
+        amount: Option<u64>,
+        gas_payment: ObjectRef,
+        gas_budget: u64,
+    ) -> Self {
+        Self::new_transfer_sui(
+            recipient,
+            sender,
+            amount,
+            gas_payment,
+            gas_budget,
+            DUMMY_GAS_PRICE,
+        )
     }
 
     pub fn new_transfer_sui(
@@ -691,12 +756,32 @@ impl TransactionData {
         amount: Option<u64>,
         gas_payment: ObjectRef,
         gas_budget: u64,
+        gas_price: u64,
     ) -> Self {
         let kind = TransactionKind::Single(SingleTransactionKind::TransferSui(TransferSui {
             recipient,
             amount,
         }));
-        Self::new(kind, sender, gas_payment, gas_budget)
+        Self::new(kind, sender, gas_payment, gas_budget, gas_price)
+    }
+
+    pub fn new_pay_with_dummy_gas_price(
+        sender: SuiAddress,
+        coins: Vec<ObjectRef>,
+        recipients: Vec<SuiAddress>,
+        amounts: Vec<u64>,
+        gas_payment: ObjectRef,
+        gas_budget: u64,
+    ) -> Self {
+        Self::new_pay(
+            sender,
+            coins,
+            recipients,
+            amounts,
+            gas_payment,
+            gas_budget,
+            DUMMY_GAS_PRICE,
+        )
     }
 
     pub fn new_pay(
@@ -706,13 +791,33 @@ impl TransactionData {
         amounts: Vec<u64>,
         gas_payment: ObjectRef,
         gas_budget: u64,
+        gas_price: u64,
     ) -> Self {
         let kind = TransactionKind::Single(SingleTransactionKind::Pay(Pay {
             coins,
             recipients,
             amounts,
         }));
-        Self::new(kind, sender, gas_payment, gas_budget)
+        Self::new(kind, sender, gas_payment, gas_budget, gas_price)
+    }
+
+    pub fn new_pay_sui_with_dummy_gas_price(
+        sender: SuiAddress,
+        coins: Vec<ObjectRef>,
+        recipients: Vec<SuiAddress>,
+        amounts: Vec<u64>,
+        gas_payment: ObjectRef,
+        gas_budget: u64,
+    ) -> Self {
+        Self::new_pay_sui(
+            sender,
+            coins,
+            recipients,
+            amounts,
+            gas_payment,
+            gas_budget,
+            DUMMY_GAS_PRICE,
+        )
     }
 
     pub fn new_pay_sui(
@@ -722,13 +827,14 @@ impl TransactionData {
         amounts: Vec<u64>,
         gas_payment: ObjectRef,
         gas_budget: u64,
+        gas_price: u64,
     ) -> Self {
         let kind = TransactionKind::Single(SingleTransactionKind::PaySui(PaySui {
             coins,
             recipients,
             amounts,
         }));
-        Self::new(kind, sender, gas_payment, gas_budget)
+        Self::new(kind, sender, gas_payment, gas_budget, gas_price)
     }
 
     pub fn new_pay_all_sui(
@@ -737,12 +843,22 @@ impl TransactionData {
         recipient: SuiAddress,
         gas_payment: ObjectRef,
         gas_budget: u64,
+        gas_price: u64,
     ) -> Self {
         let kind = TransactionKind::Single(SingleTransactionKind::PayAllSui(PayAllSui {
             coins,
             recipient,
         }));
-        Self::new(kind, sender, gas_payment, gas_budget)
+        Self::new(kind, sender, gas_payment, gas_budget, gas_price)
+    }
+
+    pub fn new_module_with_dummy_gas_price(
+        sender: SuiAddress,
+        gas_payment: ObjectRef,
+        modules: Vec<Vec<u8>>,
+        gas_budget: u64,
+    ) -> Self {
+        Self::new_module(sender, gas_payment, modules, gas_budget, DUMMY_GAS_PRICE)
     }
 
     pub fn new_module(
@@ -750,11 +866,12 @@ impl TransactionData {
         gas_payment: ObjectRef,
         modules: Vec<Vec<u8>>,
         gas_budget: u64,
+        gas_price: u64,
     ) -> Self {
         let kind = TransactionKind::Single(SingleTransactionKind::Publish(MoveModulePublish {
             modules,
         }));
-        Self::new(kind, sender, gas_payment, gas_budget)
+        Self::new(kind, sender, gas_payment, gas_budget, gas_price)
     }
 
     pub fn gas(&self) -> ObjectRef {
@@ -787,7 +904,10 @@ impl TransactionData {
     }
 
     pub fn input_objects(&self) -> SuiResult<Vec<InputObjectKind>> {
-        let mut inputs = self.kind.input_objects()?;
+        let mut inputs = self
+            .kind
+            .input_objects()
+            .map_err(SuiError::into_transaction_input_error)?;
 
         if !self.kind.is_system_tx() && !self.kind.is_pay_sui_tx() {
             inputs.push(InputObjectKind::ImmOrOwnedMoveObject(
@@ -947,11 +1067,6 @@ impl<S> Envelope<SenderSignedData, S> {
     }
 }
 
-/// A transaction that is signed by a sender but not yet by an authority.
-pub type Transaction = Envelope<SenderSignedData, EmptySignInfo>;
-pub type VerifiedTransaction = VerifiedEnvelope<SenderSignedData, EmptySignInfo>;
-pub type TrustedTransction = TrustedEnvelope<SenderSignedData, EmptySignInfo>;
-
 impl Transaction {
     pub fn from_data_and_signer(
         data: TransactionData,
@@ -1005,7 +1120,7 @@ impl VerifiedTransaction {
         system_transaction
             .pipe(TransactionKind::Single)
             .pipe(|kind| {
-                TransactionData::new(
+                TransactionData::new_with_dummy_gas_price(
                     kind,
                     SuiAddress::default(),
                     (ObjectID::ZERO, SequenceNumber::default(), ObjectDigest::MIN),
@@ -1023,10 +1138,6 @@ impl VerifiedTransaction {
     }
 }
 
-/// A transaction that is signed by a sender and also by an authority.
-pub type SignedTransaction = Envelope<SenderSignedData, AuthoritySignInfo>;
-pub type VerifiedSignedTransaction = VerifiedEnvelope<SenderSignedData, AuthoritySignInfo>;
-
 impl VerifiedSignedTransaction {
     /// Use signing key to create a signed object.
     pub fn new(
@@ -1043,6 +1154,14 @@ impl VerifiedSignedTransaction {
         ))
     }
 }
+
+/// A transaction that is signed by a sender but not yet by an authority.
+pub type Transaction = Envelope<SenderSignedData, EmptySignInfo>;
+pub type VerifiedTransaction = VerifiedEnvelope<SenderSignedData, EmptySignInfo>;
+
+/// A transaction that is signed by a sender and also by an authority.
+pub type SignedTransaction = Envelope<SenderSignedData, AuthoritySignInfo>;
+pub type VerifiedSignedTransaction = VerifiedEnvelope<SenderSignedData, AuthoritySignInfo>;
 
 pub type CertifiedTransaction = Envelope<SenderSignedData, AuthorityStrongQuorumSignInfo>;
 pub type TxCertAndSignedEffects = (CertifiedTransaction, SignedTransactionEffects);
@@ -1201,22 +1320,29 @@ pub struct HandleCertificateResponse {
 
 #[derive(Clone, Debug)]
 pub struct VerifiedHandleCertificateResponse {
-    pub signed_effects: SignedTransactionEffects,
+    pub signed_effects: VerifiedSignedTransactionEffects,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TransactionInfoResponse<TxnT = SignedTransaction, CertT = CertifiedTransaction> {
+pub struct TransactionInfoResponse<
+    TxnT = SignedTransaction,
+    CertT = CertifiedTransaction,
+    EffectsT = SignedTransactionEffects,
+> {
     // The signed transaction response to handle_transaction
     pub signed_transaction: Option<TxnT>,
     // The certificate in case one is available
     pub certified_transaction: Option<CertT>,
     // The effects resulting from a successful execution should
     // contain ObjectRef created, mutated, deleted and events.
-    pub signed_effects: Option<SignedTransactionEffects>,
+    pub signed_effects: Option<EffectsT>,
 }
 
-pub type VerifiedTransactionInfoResponse =
-    TransactionInfoResponse<VerifiedSignedTransaction, VerifiedCertificate>;
+pub type VerifiedTransactionInfoResponse = TransactionInfoResponse<
+    VerifiedSignedTransaction,
+    VerifiedCertificate,
+    VerifiedSignedTransactionEffects,
+>;
 
 impl From<VerifiedTransactionInfoResponse> for TransactionInfoResponse {
     fn from(v: VerifiedTransactionInfoResponse) -> Self {
@@ -1228,6 +1354,7 @@ impl From<VerifiedTransactionInfoResponse> for TransactionInfoResponse {
 
         let certified_transaction = certified_transaction.map(|c| c.into_inner());
         let signed_transaction = signed_transaction.map(|c| c.into_inner());
+        let signed_effects = signed_effects.map(|s| s.into_inner());
         TransactionInfoResponse {
             signed_transaction,
             certified_transaction,
@@ -1932,6 +2059,7 @@ pub type UnsignedTransactionEffects = TransactionEffectsEnvelope<EmptySignInfo>;
 pub type SignedTransactionEffects = TransactionEffectsEnvelope<AuthoritySignInfo>;
 pub type CertifiedTransactionEffects = TransactionEffectsEnvelope<AuthorityStrongQuorumSignInfo>;
 
+pub type TrustedSignedTransactionEffects = TrustedEnvelope<TransactionEffects, AuthoritySignInfo>;
 pub type VerifiedTransactionEffectsEnvelope<S> = VerifiedEnvelope<TransactionEffects, S>;
 pub type VerifiedSignedTransactionEffects = VerifiedTransactionEffectsEnvelope<AuthoritySignInfo>;
 pub type VerifiedCertifiedTransactionEffects =

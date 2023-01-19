@@ -28,6 +28,7 @@ use sui_types::event::EventID;
 use sui_types::messages::{
     CommitteeInfoResponse, ExecuteTransactionRequestType, TransactionData, VerifiedTransaction,
 };
+use sui_types::messages_checkpoint::{CheckpointSequenceNumber, CheckpointSummary};
 use sui_types::query::{EventQuery, TransactionQuery};
 use sui_types::sui_system_state::{SuiSystemState, ValidatorMetadata};
 
@@ -138,6 +139,13 @@ impl ReadApi {
             .await?)
     }
 
+    pub async fn get_checkpoint_summary(
+        &self,
+        seq_number: CheckpointSequenceNumber,
+    ) -> SuiRpcResult<CheckpointSummary> {
+        Ok(self.api.http.get_checkpoint_summary(seq_number).await?)
+    }
+
     pub fn get_transactions_stream(
         &self,
         query: TransactionQuery,
@@ -178,6 +186,10 @@ impl ReadApi {
 
     pub async fn get_sui_system_state(&self) -> SuiRpcResult<SuiSystemState> {
         Ok(self.api.http.get_sui_system_state().await?)
+    }
+
+    pub async fn get_reference_gas_price(&self) -> SuiRpcResult<u64> {
+        Ok(self.api.http.get_reference_gas_price().await?)
     }
 
     pub async fn dry_run_transaction(

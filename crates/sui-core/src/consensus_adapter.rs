@@ -32,7 +32,6 @@ use tap::prelude::*;
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::authority::AuthorityState;
 use mysten_metrics::spawn_monitored_task;
 use sui_types::base_types::AuthorityName;
 use sui_types::messages::ConsensusTransactionKind;
@@ -153,18 +152,19 @@ impl ConsensusAdapter {
     /// Make a new Consensus adapter instance.
     pub fn new(
         consensus_client: Box<dyn SubmitToConsensus>,
-        authority: Arc<AuthorityState>,
+        authority: AuthorityName,
+        epoch_store: &Arc<AuthorityPerEpochStore>,
         opt_metrics: OptArcConsensusAdapterMetrics,
     ) -> Arc<Self> {
         let num_inflight_transactions = Default::default();
         let this = Arc::new(Self {
             consensus_client,
-            authority: authority.name,
+            authority,
             num_inflight_transactions,
             opt_metrics,
         });
         let recover = this.clone();
-        recover.submit_recovered(&authority.epoch_store());
+        recover.submit_recovered(epoch_store);
         this
     }
 
@@ -418,8 +418,8 @@ pub fn position_submit_certificate(
 impl ReconfigurationInitiator for Arc<ConsensusAdapter> {
     /// This method is called externally to begin reconfiguration
     /// It transition reconfig state to reject new certificates from user
-    /// ConsensusAdapter will send EndOfPublish message once pending certificate queue is drained
-    fn close_epoch(&self, epoch_store: &Arc<AuthorityPerEpochStore>) -> SuiResult {
+    /// ConsensusAdapter will send EndOfPublish message once pending certificate queue is drained.
+    fn close_epoch(&self, epoch_store: &Arc<AuthorityPerEpochStore>) {
         let send_end_of_publish = {
             let reconfig_guard = epoch_store.get_reconfig_state_write_lock_guard();
             let send_end_of_publish = epoch_store.pending_consensus_certificates_empty();
@@ -435,7 +435,6 @@ impl ReconfigurationInitiator for Arc<ConsensusAdapter> {
                 warn!("Error when sending end of publish message: {:?}", err);
             }
         }
-        Ok(())
     }
 }
 

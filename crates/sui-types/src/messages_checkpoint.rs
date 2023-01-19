@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, Bytes};
 
 pub type CheckpointSequenceNumber = u64;
+pub type CheckpointTimestamp = u64;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CheckpointRequest {
@@ -76,6 +77,12 @@ impl AsRef<[u8; 32]> for CheckpointDigest {
     }
 }
 
+impl CheckpointDigest {
+    pub fn encode(&self) -> String {
+        Base58::encode(self.0)
+    }
+}
+
 #[serde_as]
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
@@ -95,6 +102,12 @@ impl AsRef<[u8]> for CheckpointContentsDigest {
 impl AsRef<[u8; 32]> for CheckpointContentsDigest {
     fn as_ref(&self) -> &[u8; 32] {
         &self.0
+    }
+}
+
+impl CheckpointContentsDigest {
+    pub fn encode(&self) -> String {
+        Base58::encode(self.0)
     }
 }
 
@@ -120,6 +133,11 @@ pub struct CheckpointSummary {
     /// TODO: If desired, we could also commit to the previous last checkpoint cert so that
     /// they form a hash chain.
     pub next_epoch_committee: Option<Vec<(AuthorityName, StakeUnit)>>,
+
+    /// Timestamp of the checkpoint - number of milliseconds from the Unix epoch
+    /// Checkpoint timestamps are monotonic, but not strongly monotonic - subsequent
+    /// checkpoints can have same timestamp if they originate from the same underlining consensus commit
+    pub timestamp_ms: CheckpointTimestamp,
 }
 
 impl CheckpointSummary {
@@ -131,6 +149,7 @@ impl CheckpointSummary {
         previous_digest: Option<CheckpointDigest>,
         epoch_rolling_gas_cost_summary: GasCostSummary,
         next_epoch_committee: Option<Committee>,
+        timestamp_ms: CheckpointTimestamp,
     ) -> CheckpointSummary {
         let content_digest = transactions.digest();
 
@@ -142,6 +161,7 @@ impl CheckpointSummary {
             previous_digest,
             epoch_rolling_gas_cost_summary,
             next_epoch_committee: next_epoch_committee.map(|c| c.voting_rights),
+            timestamp_ms,
         }
     }
 
@@ -226,6 +246,7 @@ impl SignedCheckpointSummary {
         previous_digest: Option<CheckpointDigest>,
         epoch_rolling_gas_cost_summary: GasCostSummary,
         next_epoch_committee: Option<Committee>,
+        timestamp_ms: CheckpointTimestamp,
     ) -> SignedCheckpointSummary {
         let checkpoint = CheckpointSummary::new(
             epoch,
@@ -235,6 +256,7 @@ impl SignedCheckpointSummary {
             previous_digest,
             epoch_rolling_gas_cost_summary,
             next_epoch_committee,
+            timestamp_ms,
         );
         SignedCheckpointSummary::new_from_summary(checkpoint, authority, signer)
     }
@@ -389,6 +411,10 @@ impl VerifiedCheckpoint {
     pub fn into_inner(self) -> CertifiedCheckpointSummary {
         self.0
     }
+
+    pub fn into_summary_and_sequence(self) -> (CheckpointSequenceNumber, CheckpointSummary) {
+        (self.summary.sequence_number, self.0.summary)
+    }
 }
 
 impl std::ops::Deref for VerifiedCheckpoint {
@@ -409,7 +435,7 @@ pub struct CheckpointSignatureMessage {
 /// They must have already been causally ordered. Since the causal order algorithm
 /// is the same among validators, we expect all honest validators to come up with
 /// the same order for each checkpoint content.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CheckpointContents {
     transactions: Vec<ExecutionDigests>,
     /// This field 'pins' user signatures for the checkpoint:
@@ -524,6 +550,7 @@ mod tests {
                     None,
                     GasCostSummary::default(),
                     None,
+                    0,
                 )
             })
             .collect();
@@ -562,6 +589,7 @@ mod tests {
                     None,
                     GasCostSummary::default(),
                     None,
+                    0,
                 )
             })
             .collect();
@@ -591,6 +619,7 @@ mod tests {
                     None,
                     GasCostSummary::default(),
                     None,
+                    0,
                 )
             })
             .collect();
