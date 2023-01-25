@@ -13,7 +13,8 @@ use sui_json_rpc_types::{
     GetPastObjectDataResponse, GetRawObjectDataResponse, MoveFunctionArgType,
     RPCTransactionRequestParams, SuiCoinMetadata, SuiEventEnvelope, SuiEventFilter,
     SuiExecuteTransactionResponse, SuiMoveNormalizedFunction, SuiMoveNormalizedModule,
-    SuiMoveNormalizedStruct, SuiObjectInfo, SuiTransactionAuthSignersResponse,
+    SuiMoveNormalizedStruct, SuiObjectInfo, SuiTBlsSignObjectCommitmentType,
+    SuiTBlsSignRandomnessObjectResponse, SuiTransactionAuthSignersResponse,
     SuiTransactionBuilderMode, SuiTransactionEffects, SuiTransactionFilter, SuiTransactionResponse,
     SuiTypeTag, TransactionBytes, TransactionsPage,
 };
@@ -28,7 +29,8 @@ use sui_types::governance::DelegatedStake;
 use sui_types::messages::CommitteeInfoResponse;
 use sui_types::messages::ExecuteTransactionRequestType;
 use sui_types::messages_checkpoint::{
-    CheckpointContents, CheckpointContentsDigest, CheckpointSequenceNumber, CheckpointSummary,
+    CheckpointContents, CheckpointContentsDigest, CheckpointDigest, CheckpointSequenceNumber,
+    CheckpointSummary,
 };
 use sui_types::query::{EventQuery, TransactionQuery};
 use sui_types::sui_system_state::{SuiSystemState, ValidatorMetadata};
@@ -48,7 +50,7 @@ pub trait CoinReadApi {
         &self,
         /// the owner's Sui address
         owner: SuiAddress,
-        /// optional fully qualified type names for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC), default to 0x2::sui::SUI if not specified.
+        /// optional type name for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC), default to 0x2::sui::SUI if not specified.
         coin_type: Option<String>,
         /// optional paging cursor
         cursor: Option<ObjectID>,
@@ -74,7 +76,7 @@ pub trait CoinReadApi {
         &self,
         /// the owner's Sui address
         owner: SuiAddress,
-        /// optional fully qualified type names for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC), default to 0x2::sui::SUI if not specified.
+        /// optional type names for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC), default to 0x2::sui::SUI if not specified.
         coin_type: Option<String>,
     ) -> RpcResult<Balance>;
 
@@ -90,7 +92,7 @@ pub trait CoinReadApi {
     #[method(name = "getCoinMetadata")]
     async fn get_coin_metadata(
         &self,
-        /// fully qualified type names for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC)
+        /// type name for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC)
         coin_type: String,
     ) -> RpcResult<SuiCoinMetadata>;
 
@@ -98,7 +100,7 @@ pub trait CoinReadApi {
     #[method(name = "getTotalSupply")]
     async fn get_total_supply(
         &self,
-        /// fully qualified type names for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC)
+        /// type name for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC)
         coin_type: String,
     ) -> RpcResult<Supply>;
 }
@@ -302,18 +304,25 @@ pub trait RpcFullNodeReadApi {
         sequence_number: CheckpointSequenceNumber,
     ) -> RpcResult<CheckpointSummary>;
 
+    /// Return a checkpoint summary based on checkpoint digest
+    #[method(name = "getCheckpointSummaryByDigest")]
+    fn get_checkpoint_summary_by_digest(
+        &self,
+        digest: CheckpointDigest,
+    ) -> RpcResult<CheckpointSummary>;
+
     /// Return contents of a checkpoint, namely a list of execution digests
     #[method(name = "getCheckpointContents")]
     fn get_checkpoint_contents(
         &self,
-        digest: CheckpointContentsDigest,
+        sequence_number: CheckpointSequenceNumber,
     ) -> RpcResult<CheckpointContents>;
 
-    /// Return contents of a checkpoint based on its sequence number
-    #[method(name = "getCheckpointContentsBySequenceNumber")]
-    fn get_checkpoint_contents_by_sequence_number(
+    /// Return contents of a checkpoint based on checkpoint content digest
+    #[method(name = "getCheckpointContentsByDigest")]
+    fn get_checkpoint_contents_by_digest(
         &self,
-        sequence_number: CheckpointSequenceNumber,
+        digest: CheckpointContentsDigest,
     ) -> RpcResult<CheckpointContents>;
 }
 
@@ -653,6 +662,20 @@ pub trait EventReadApi {
         /// query result ordering, default to false (ascending order), oldest record first.
         descending_order: Option<bool>,
     ) -> RpcResult<EventPage>;
+}
+
+#[open_rpc(namespace = "sui", tag = "Threshold BLS APIs")]
+#[rpc(server, client, namespace = "sui")]
+pub trait ThresholdBlsApi {
+    /// Sign an a Randomness object with threshold BLS.
+    #[method(name = "tblsSignRandomnessObject")]
+    async fn tbls_sign_randomness_object(
+        &self,
+        /// The object ID.
+        object_id: ObjectID,
+        /// The way in which the commitment on the object creation should be verified.
+        commitment_type: SuiTBlsSignObjectCommitmentType,
+    ) -> RpcResult<SuiTBlsSignRandomnessObjectResponse>;
 }
 
 #[open_rpc(namespace = "sui", tag = "APIs to execute transactions.")]

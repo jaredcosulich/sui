@@ -21,6 +21,7 @@ use insta::assert_yaml_snapshot;
 use multiaddr::Multiaddr;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use sui_config::genesis::GenesisChainParameters;
 use sui_config::ValidatorInfo;
 use sui_config::{genesis::Builder, genesis_config::GenesisConfig};
 use sui_types::base_types::{ObjectID, SuiAddress};
@@ -38,6 +39,7 @@ fn genesis_config_snapshot_matches() {
 
     let fake_obj_id = ObjectID::from(fake_addr);
     let mut genesis_config = GenesisConfig::for_local_testing();
+    genesis_config.parameters.timestamp_ms = 0;
     for account in &mut genesis_config.accounts {
         account.address = Some(fake_addr);
         for gas_obj in &mut account.gas_objects {
@@ -80,6 +82,7 @@ fn populated_genesis_snapshot_matches() {
     let genesis = Builder::new()
         .add_objects(objects)
         .add_validator(validator, pop)
+        .with_parameters(GenesisChainParameters { timestamp_ms: 10 })
         .add_validator_signature(&key)
         .build();
     assert_yaml_snapshot!(genesis.validator_set());

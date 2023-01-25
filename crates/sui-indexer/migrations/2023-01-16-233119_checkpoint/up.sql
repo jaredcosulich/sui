@@ -10,8 +10,13 @@ CREATE TABLE checkpoints (
     total_transactions BIGINT NOT NULL,
     previous_digest VARCHAR(255),
     next_epoch_committee TEXT,
+    -- number of milliseconds from the Unix epoch
+    timestamp_ms BIGINT NOT NULL,
     UNIQUE(sequence_number) 
 );
+
+CREATE INDEX checkpoints_content_digest ON checkpoints (content_digest);
+CREATE INDEX checkpoints_epoch ON checkpoints (epoch);
 
 CREATE TABLE checkpoint_logs (
     next_cursor_sequence_number BIGINT PRIMARY KEY

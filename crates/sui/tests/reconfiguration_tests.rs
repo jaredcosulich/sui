@@ -40,7 +40,7 @@ async fn local_advance_epoch_tx_test() {
     let (net, states, _, _) = init_local_authorities(4, vec![]).await;
 
     // Make sure that validators do not accept advance epoch sent externally.
-    let tx = VerifiedTransaction::new_change_epoch(1, 0, 0, 0);
+    let tx = VerifiedTransaction::new_change_epoch(1, 0, 0, 0, 0);
     let client0 = net.get_client(&states[0].name).unwrap().authority_client();
     assert!(matches!(
         client0.handle_transaction(tx.into_inner()).await,
@@ -76,6 +76,7 @@ async fn advance_epoch_tx_test_impl(
         .create_advance_epoch_tx_cert(
             &states[0].epoch_store_for_testing(),
             &GasCostSummary::new(0, 0, 0),
+            0,
             Duration::from_secs(15),
             certifier,
         )
@@ -91,6 +92,7 @@ async fn advance_epoch_tx_test_impl(
                 .create_advance_epoch_tx_cert(
                     &state.epoch_store_for_testing(),
                     &GasCostSummary::new(0, 0, 0),
+                    0,
                     Duration::from_secs(1000), // A very very long time
                     certifier,
                 )
@@ -261,22 +263,35 @@ async fn reconfig_with_revert_end_to_end_test() {
 
 // This test just starts up a cluster that reconfigures itself under 0 load.
 #[sim_test]
-#[ignore] // test is flaky right now
 async fn test_passive_reconfig() {
     telemetry_subscribers::init_for_testing();
 
-    let _test_cluster = TestClusterBuilder::new()
+    let test_cluster = TestClusterBuilder::new()
         .with_checkpoints_per_epoch(10)
         .build()
         .await
         .unwrap();
 
-    let duration_secs: u64 = std::env::var("RECONFIG_TEST_DURATION")
+    let mut epoch_rx = test_cluster
+        .fullnode_handle
+        .sui_node
+        .subscribe_to_epoch_change();
+
+    let target_epoch: u64 = std::env::var("RECONFIG_TARGET_EPOCH")
         .ok()
         .map(|v| v.parse().unwrap())
-        .unwrap_or(30);
+        .unwrap_or(4);
 
-    sleep(Duration::from_secs(duration_secs)).await;
+    timeout(Duration::from_secs(60), async move {
+        while let Ok(committee) = epoch_rx.recv().await {
+            info!("received epoch {}", committee.epoch);
+            if committee.epoch >= target_epoch {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("Timed out waiting for cluster to target epoch");
 }
 
 #[sim_test]

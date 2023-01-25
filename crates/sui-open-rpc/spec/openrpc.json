@@ -12,7 +12,7 @@
       "name": "Apache-2.0",
       "url": "https://raw.githubusercontent.com/MystenLabs/sui/main/LICENSE"
     },
-    "version": "0.23.0"
+    "version": "0.24.0"
   },
   "methods": [
     {
@@ -590,7 +590,7 @@
         },
         {
           "name": "coin_type",
-          "description": "optional fully qualified type names for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC), default to 0x2::sui::SUI if not specified.",
+          "description": "optional type names for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC), default to 0x2::sui::SUI if not specified.",
           "schema": {
             "type": "string"
           }
@@ -614,10 +614,12 @@
       "description": "Return contents of a checkpoint, namely a list of execution digests",
       "params": [
         {
-          "name": "digest",
+          "name": "sequence_number",
           "required": true,
           "schema": {
-            "$ref": "#/components/schemas/CheckpointContentsDigest"
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
           }
         }
       ],
@@ -630,21 +632,19 @@
       }
     },
     {
-      "name": "sui_getCheckpointContentsBySequenceNumber",
+      "name": "sui_getCheckpointContentsByDigest",
       "tags": [
         {
           "name": "Full Node API"
         }
       ],
-      "description": "Return contents of a checkpoint based on its sequence number",
+      "description": "Return contents of a checkpoint based on checkpoint content digest",
       "params": [
         {
-          "name": "sequence_number",
+          "name": "digest",
           "required": true,
           "schema": {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0.0
+            "$ref": "#/components/schemas/CheckpointContentsDigest"
           }
         }
       ],
@@ -684,6 +684,31 @@
       }
     },
     {
+      "name": "sui_getCheckpointSummaryByDigest",
+      "tags": [
+        {
+          "name": "Full Node API"
+        }
+      ],
+      "description": "Return a checkpoint summary based on checkpoint digest",
+      "params": [
+        {
+          "name": "digest",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/CheckpointDigest"
+          }
+        }
+      ],
+      "result": {
+        "name": "CheckpointSummary",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/CheckpointSummary"
+        }
+      }
+    },
+    {
       "name": "sui_getCoinMetadata",
       "tags": [
         {
@@ -694,7 +719,7 @@
       "params": [
         {
           "name": "coin_type",
-          "description": "fully qualified type names for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC)",
+          "description": "type name for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC)",
           "required": true,
           "schema": {
             "type": "string"
@@ -728,7 +753,7 @@
         },
         {
           "name": "coin_type",
-          "description": "optional fully qualified type names for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC), default to 0x2::sui::SUI if not specified.",
+          "description": "optional type name for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC), default to 0x2::sui::SUI if not specified.",
           "schema": {
             "type": "string"
           }
@@ -1238,7 +1263,7 @@
               "details": {
                 "data": {
                   "dataType": "moveObject",
-                  "type": "0x2::coin::Coin<0x2::coin::Coin<0x2::sui::SUI>>",
+                  "type": "0x2::coin::Coin<0x2::sui::SUI>",
                   "has_public_transfer": true,
                   "fields": {
                     "balance": "10000",
@@ -1542,7 +1567,7 @@
       "params": [
         {
           "name": "coin_type",
-          "description": "fully qualified type names for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC)",
+          "description": "type name for the coin (e.g., 0x168da5bf1f48dafc111b0a488fa454aca95e0b5e::usdc::USDC)",
           "required": true,
           "schema": {
             "type": "string"
@@ -2689,6 +2714,40 @@
       }
     },
     {
+      "name": "sui_tblsSignRandomnessObject",
+      "tags": [
+        {
+          "name": "Threshold BLS APIs"
+        }
+      ],
+      "description": "Sign an a Randomness object with threshold BLS.",
+      "params": [
+        {
+          "name": "object_id",
+          "description": "The object ID.",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ObjectID"
+          }
+        },
+        {
+          "name": "commitment_type",
+          "description": "The way in which the commitment on the object creation should be verified.",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/SuiTBlsSignObjectCommitmentType"
+          }
+        }
+      ],
+      "result": {
+        "name": "SuiTBlsSignRandomnessObjectResponse",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/SuiTBlsSignRandomnessObjectResponse"
+        }
+      }
+    },
+    {
       "name": "sui_transferObject",
       "tags": [
         {
@@ -2861,7 +2920,7 @@
               "details": {
                 "data": {
                   "dataType": "moveObject",
-                  "type": "0x2::coin::Coin<0x2::coin::Coin<0x2::sui::SUI>>",
+                  "type": "0x2::coin::Coin<0x2::sui::SUI>",
                   "has_public_transfer": true,
                   "fields": {
                     "balance": "10000",
@@ -3097,6 +3156,7 @@
           "coinObjectId",
           "coinType",
           "digest",
+          "previousTransaction",
           "version"
         ],
         "properties": {
@@ -3121,6 +3181,9 @@
             ],
             "format": "uint64",
             "minimum": 0.0
+          },
+          "previousTransaction": {
+            "$ref": "#/components/schemas/TransactionDigest"
           },
           "version": {
             "$ref": "#/components/schemas/SequenceNumber"
@@ -4305,6 +4368,32 @@
           }
         ]
       },
+      "LinkedTable_for_ObjectID": {
+        "description": "Rust version of the Move sui::linked_table::LinkedTable type. Putting it here since we only use it in sui_system in the framework.",
+        "type": "object",
+        "required": [
+          "head",
+          "id",
+          "size",
+          "tail"
+        ],
+        "properties": {
+          "head": {
+            "$ref": "#/components/schemas/MoveOption_for_ObjectID"
+          },
+          "id": {
+            "$ref": "#/components/schemas/ObjectID"
+          },
+          "size": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "tail": {
+            "$ref": "#/components/schemas/MoveOption_for_ObjectID"
+          }
+        }
+      },
       "MoveCall": {
         "type": "object",
         "required": [
@@ -4390,6 +4479,21 @@
             "additionalProperties": false
           }
         ]
+      },
+      "MoveOption_for_ObjectID": {
+        "description": "Rust version of the Move std::option::Option type. Putting it in this file because it's only used here.",
+        "type": "object",
+        "required": [
+          "vec"
+        ],
+        "properties": {
+          "vec": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ObjectID"
+            }
+          }
+        }
       },
       "MovePackage": {
         "type": "object",
@@ -5132,7 +5236,7 @@
             "$ref": "#/components/schemas/Supply"
           },
           "pending_delegations": {
-            "$ref": "#/components/schemas/TableVec"
+            "$ref": "#/components/schemas/LinkedTable_for_ObjectID"
           },
           "pending_withdraws": {
             "$ref": "#/components/schemas/TableVec"
@@ -5770,9 +5874,11 @@
         "type": "object",
         "required": [
           "epoch",
+          "epoch_start_timestamp_ms",
           "info",
           "parameters",
           "reference_gas_price",
+          "safe_mode",
           "stake_subsidy",
           "storage_fund",
           "treasury_cap",
@@ -5781,6 +5887,11 @@
         ],
         "properties": {
           "epoch": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0.0
+          },
+          "epoch_start_timestamp_ms": {
             "type": "integer",
             "format": "uint64",
             "minimum": 0.0
@@ -5796,6 +5907,9 @@
             "format": "uint64",
             "minimum": 0.0
           },
+          "safe_mode": {
+            "type": "boolean"
+          },
           "stake_subsidy": {
             "$ref": "#/components/schemas/StakeSubsidy"
           },
@@ -5810,6 +5924,41 @@
           },
           "validators": {
             "$ref": "#/components/schemas/ValidatorSet"
+          }
+        }
+      },
+      "SuiTBlsSignObjectCommitmentType": {
+        "oneOf": [
+          {
+            "description": "Check that the object is committed by the consensus.",
+            "type": "string",
+            "enum": [
+              "ConsensusCommitted"
+            ]
+          },
+          {
+            "description": "Check that the object is committed using the effects certificate.",
+            "type": "object",
+            "required": [
+              "FastPathCommitted"
+            ],
+            "properties": {
+              "FastPathCommitted": {
+                "$ref": "#/components/schemas/CertifiedTransactionEffects"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "SuiTBlsSignRandomnessObjectResponse": {
+        "type": "object",
+        "required": [
+          "signature"
+        ],
+        "properties": {
+          "signature": {
+            "$ref": "#/components/schemas/Base64"
           }
         }
       },
@@ -5896,8 +6045,7 @@
         "type": "object",
         "required": [
           "max_validator_candidate_count",
-          "min_validator_stake",
-          "storage_gas_price"
+          "min_validator_stake"
         ],
         "properties": {
           "max_validator_candidate_count": {
@@ -5906,11 +6054,6 @@
             "minimum": 0.0
           },
           "min_validator_stake": {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0.0
-          },
-          "storage_gas_price": {
             "type": "integer",
             "format": "uint64",
             "minimum": 0.0

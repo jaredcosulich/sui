@@ -259,9 +259,27 @@ pub struct GenesisValidatorInfo {
 }
 
 /// Initial set of parameters for a chain.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct GenesisChainParameters {
+    pub timestamp_ms: u64,
     // In the future we can add the initial gas schedule or other parameters here
+}
+
+impl GenesisChainParameters {
+    pub fn new() -> Self {
+        Self {
+            timestamp_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        }
+    }
+}
+
+impl Default for GenesisChainParameters {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub struct Builder {
@@ -513,7 +531,10 @@ impl Builder {
 
         // Load parameters
         let parameters_file = path.join(GENESIS_BUILDER_PARAMETERS_FILE);
-        let parameters = serde_yaml::from_slice(&fs::read(parameters_file)?)?;
+        let parameters = serde_yaml::from_slice(
+            &fs::read(parameters_file).context("unable to read genesis parameters file")?,
+        )
+        .context("unable to deserialize genesis parameters")?;
 
         // Load Objects
         let mut objects = BTreeMap::new();
@@ -656,7 +677,7 @@ impl Builder {
 }
 
 fn build_unsigned_genesis_data(
-    _parameters: &GenesisChainParameters,
+    parameters: &GenesisChainParameters,
     validators: &[GenesisValidatorInfo],
     objects: &[Object],
 ) -> (
@@ -674,11 +695,17 @@ fn build_unsigned_genesis_data(
         sui_framework::get_sui_framework(),
     ];
 
-    let objects = create_genesis_objects(&mut genesis_ctx, &modules, objects, validators);
+    let objects = create_genesis_objects(
+        &mut genesis_ctx,
+        &modules,
+        objects,
+        validators,
+        parameters.timestamp_ms,
+    );
 
     let (genesis_transaction, genesis_effects, objects) = create_genesis_transaction(objects);
     let (checkpoint, checkpoint_contents) =
-        create_genesis_checkpoint(&genesis_transaction, &genesis_effects);
+        create_genesis_checkpoint(parameters, &genesis_transaction, &genesis_effects);
 
     (
         checkpoint,
@@ -690,6 +717,7 @@ fn build_unsigned_genesis_data(
 }
 
 fn create_genesis_checkpoint(
+    parameters: &GenesisChainParameters,
     transaction: &Transaction,
     effects: &TransactionEffects,
 ) -> (CheckpointSummary, CheckpointContents) {
@@ -706,7 +734,7 @@ fn create_genesis_checkpoint(
         previous_digest: None,
         epoch_rolling_gas_cost_summary: Default::default(),
         next_epoch_committee: None,
-        timestamp_ms: 0, /*todo - put a proper timestamp*/
+        timestamp_ms: parameters.timestamp_ms,
     };
 
     (checkpoint, contents)
@@ -797,6 +825,7 @@ fn create_genesis_objects(
     modules: &[Vec<CompiledModule>],
     input_objects: &[Object],
     validators: &[GenesisValidatorInfo],
+    epoch_start_timestamp_ms: u64,
 ) -> Vec<Object> {
     let mut store = InMemoryStorage::new(Vec::new());
 
@@ -819,7 +848,14 @@ fn create_genesis_objects(
         store.insert_object(object.to_owned());
     }
 
-    generate_genesis_system_object(&mut store, &move_vm, validators, genesis_ctx).unwrap();
+    generate_genesis_system_object(
+        &mut store,
+        &move_vm,
+        validators,
+        genesis_ctx,
+        epoch_start_timestamp_ms,
+    )
+    .unwrap();
 
     store
         .into_inner()
@@ -902,6 +938,7 @@ pub fn generate_genesis_system_object(
     move_vm: &MoveVM,
     committee: &[GenesisValidatorInfo],
     genesis_ctx: &mut TxContext,
+    epoch_start_timestamp_ms: u64,
 ) -> Result<()> {
     let genesis_digest = genesis_ctx.digest();
     let mut temporary_store =
@@ -967,6 +1004,7 @@ pub fn generate_genesis_system_object(
             CallArg::Pure(bcs::to_bytes(&stakes).unwrap()),
             CallArg::Pure(bcs::to_bytes(&gas_prices).unwrap()),
             CallArg::Pure(bcs::to_bytes(&commission_rates).unwrap()),
+            CallArg::Pure(bcs::to_bytes(&epoch_start_timestamp_ms).unwrap()),
         ],
         SuiGasStatus::new_unmetered().create_move_gas_status(),
         genesis_ctx,

@@ -33,7 +33,10 @@ export function processValidators(set: ActiveValidator[], totalStake: bigint) {
             address: av.fields.metadata.fields.sui_address,
             stake: av.fields.stake_amount,
             stakePercent: getStakedPercent(av.fields.stake_amount, totalStake),
-            logo: null,
+            logo:
+                typeof av.fields.metadata.fields.image_url === 'string'
+                    ? av.fields.metadata.fields.image_url
+                    : null,
         };
     });
 }
@@ -50,7 +53,12 @@ const validatorsTable = (
     const validators = processValidators(
         validatorsData.validators.fields.active_validators,
         totalStake
-    ).sort((a, b) => (a.name > b.name ? 1 : -1));
+    ).sort((a, b) =>
+        a.name.localeCompare(b.name, 'en', {
+            sensitivity: 'base',
+            numeric: true,
+        })
+    );
 
     const validatorsItems = limit ? validators.splice(0, limit) : validators;
 
@@ -68,9 +76,10 @@ const validatorsTable = (
                                 circle
                             />
                         )}
-                        <Text variant="bodySmall/medium" color="steel-darker">
+
+                        <Link to={`/validator/${encodeURIComponent(address)}`}>
                             {name}
-                        </Text>
+                        </Link>
                     </div>
                 ),
                 stake: <StakeColumn stake={stake} />,
@@ -86,15 +95,15 @@ const validatorsTable = (
         }),
         columns: [
             {
-                headerLabel: 'Name',
+                header: 'Name',
                 accessorKey: 'name',
             },
             {
-                headerLabel: 'Address',
+                header: 'Address',
                 accessorKey: 'address',
             },
             {
-                headerLabel: 'Stake',
+                header: 'Stake',
                 accessorKey: 'stake',
             },
         ],

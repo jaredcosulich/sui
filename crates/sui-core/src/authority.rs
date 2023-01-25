@@ -5,6 +5,8 @@
 use anyhow::anyhow;
 use arc_swap::{ArcSwap, Guard};
 use chrono::prelude::*;
+use fastcrypto::encoding::Base58;
+use fastcrypto::encoding::Encoding;
 use fastcrypto::traits::KeyPair;
 use move_bytecode_utils::module_cache::SyncModuleCache;
 use move_core_types::account_address::AccountAddress;
@@ -26,7 +28,8 @@ use std::str::FromStr;
 use std::time::Duration;
 use std::{collections::HashMap, pin::Pin, sync::Arc};
 use sui_config::node::AuthorityStorePruningConfig;
-use sui_protocol_constants::MAX_TX_GAS;
+use sui_protocol_constants::{MAX_TX_GAS, STORAGE_GAS_PRICE};
+use sui_types::parse_sui_struct_tag;
 use tap::TapFallible;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::oneshot;
@@ -60,7 +63,8 @@ use sui_types::dynamic_field::{DynamicFieldInfo, DynamicFieldType};
 use sui_types::event::{Event, EventID};
 use sui_types::gas::{GasCostSummary, SuiGasStatus};
 use sui_types::messages_checkpoint::{
-    CheckpointContents, CheckpointContentsDigest, CheckpointSequenceNumber, CheckpointSummary,
+    CheckpointContents, CheckpointContentsDigest, CheckpointDigest, CheckpointSequenceNumber,
+    CheckpointSummary, CheckpointTimestamp,
 };
 use sui_types::messages_checkpoint::{CheckpointRequest, CheckpointResponse};
 use sui_types::object::{Owner, PastObjectRead};
@@ -83,6 +87,7 @@ use sui_types::{
 
 use crate::authority::authority_notify_read::NotifyRead;
 use crate::authority::authority_per_epoch_store::AuthorityPerEpochStore;
+use crate::authority::authority_per_epoch_store_pruner::AuthorityPerEpochStorePruner;
 use crate::authority::authority_store::{ExecutionLockReadGuard, ObjectLockStatus};
 use crate::authority_aggregator::TransactionCertifier;
 use crate::checkpoints::CheckpointStore;
@@ -117,6 +122,7 @@ mod gas_tests;
 mod tbls_tests;
 
 pub mod authority_per_epoch_store;
+pub mod authority_per_epoch_store_pruner;
 
 pub mod authority_store_pruner;
 pub mod authority_store_tables;
@@ -433,6 +439,7 @@ pub struct AuthorityState {
     tx_execution_shutdown: Mutex<Option<oneshot::Sender<()>>>,
 
     pub metrics: Arc<AuthorityMetrics>,
+    _pruner: AuthorityPerEpochStorePruner,
 }
 
 /// The authority state encapsulates all state, drives execution, and ensures safety.
@@ -1131,14 +1138,12 @@ impl AuthorityState {
             execution_engine::manual_execute_move_call_fake_txn_digest(sender, move_call.clone());
         let temporary_store =
             TemporaryStore::new(self.database.clone(), input_objects, transaction_digest);
-        let storage_gas_price = self
-            .database
-            .get_sui_system_state_object()?
-            .parameters
-            .storage_gas_price
-            .into();
-        let gas_status =
-            SuiGasStatus::new_with_budget(MAX_TX_GAS, storage_gas_price, storage_gas_price);
+        let gas_status = SuiGasStatus::new_with_budget(
+            MAX_TX_GAS,
+            // TODO: Use proper computation gas price.
+            STORAGE_GAS_PRICE.into(),
+            STORAGE_GAS_PRICE.into(),
+        );
         let (effects, execution_result) =
             execution_engine::manual_execute_move_call::<execution_mode::DevInspect, _>(
                 shared_object_refs,
@@ -1590,6 +1595,7 @@ impl AuthorityState {
         transaction_streamer: Option<Arc<TransactionStreamer>>,
         checkpoint_store: Arc<CheckpointStore>,
         prometheus_registry: &Registry,
+        pruning_config: &AuthorityStorePruningConfig,
     ) -> Arc<Self> {
         let native_functions =
             sui_framework::natives::all_natives(MOVE_STDLIB_ADDRESS, SUI_FRAMEWORK_ADDRESS);
@@ -1613,6 +1619,9 @@ impl AuthorityState {
         ));
         let (tx_execution_shutdown, rx_execution_shutdown) = oneshot::channel();
 
+        let _pruner =
+            AuthorityPerEpochStorePruner::new(epoch_store.get_parent_path(), pruning_config);
+
         let state = Arc::new(AuthorityState {
             name,
             secret,
@@ -1631,6 +1640,7 @@ impl AuthorityState {
             transaction_manager,
             tx_execution_shutdown: Mutex::new(Some(tx_execution_shutdown)),
             metrics,
+            _pruner,
         });
 
         prometheus_registry
@@ -1720,6 +1730,7 @@ impl AuthorityState {
             None,
             checkpoint_store,
             &registry,
+            &AuthorityStorePruningConfig::default(),
         )
         .await;
 
@@ -2151,7 +2162,7 @@ impl AuthorityState {
             .ok_or_else(|| anyhow!("Latest checkpoint sequence number not found"))
     }
 
-    pub fn get_checkpoint_summary(
+    pub fn get_checkpoint_summary_by_sequence_number(
         &self,
         sequence_number: CheckpointSequenceNumber,
     ) -> Result<CheckpointSummary, anyhow::Error> {
@@ -2163,6 +2174,22 @@ impl AuthorityState {
             None => Err(anyhow!(
                 "Verified checkpoint not found for sequence number {}",
                 sequence_number
+            )),
+        }
+    }
+
+    pub fn get_checkpoint_summary_by_digest(
+        &self,
+        digest: CheckpointDigest,
+    ) -> Result<CheckpointSummary, anyhow::Error> {
+        let verified_checkpoint = self
+            .get_checkpoint_store()
+            .get_checkpoint_by_digest(&digest)?;
+        match verified_checkpoint {
+            Some(verified_checkpoint) => Ok(verified_checkpoint.into_inner().summary),
+            None => Err(anyhow!(
+                "Verified checkpoint not found for digest: {}",
+                Base58::encode(digest)
             )),
         }
     }
@@ -2186,14 +2213,7 @@ impl AuthorityState {
         match verified_checkpoint {
             Some(verified_checkpoint) => {
                 let content_digest = verified_checkpoint.into_inner().content_digest();
-                self.get_checkpoint_store()
-                    .get_checkpoint_contents(&content_digest)?
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "Checkpoint contents not found for sequence number: {}",
-                            sequence_number
-                        )
-                    })
+                self.get_checkpoint_contents(content_digest)
             }
             None => Err(anyhow!(
                 "Verified checkpoint not found for sequence number {}",
@@ -2253,8 +2273,9 @@ impl AuthorityState {
                     .await?
             }
             EventQuery::MoveEvent(struct_name) => {
+                let normalized_struct_name = parse_sui_struct_tag(&struct_name)?.to_string();
                 es.events_by_move_event_struct_name(
-                    &struct_name,
+                    &normalized_struct_name,
                     tx_num,
                     event_num,
                     limit,
@@ -2557,6 +2578,7 @@ impl AuthorityState {
         &self,
         epoch_store: &Arc<AuthorityPerEpochStore>,
         gas_cost_summary: &GasCostSummary,
+        epoch_start_timestamp_ms: CheckpointTimestamp,
         timeout: Duration,
         transaction_certifier: &dyn TransactionCertifier,
     ) -> anyhow::Result<VerifiedCertificate> {
@@ -2573,6 +2595,7 @@ impl AuthorityState {
             gas_cost_summary.storage_cost,
             gas_cost_summary.computation_cost,
             gas_cost_summary.storage_rebate,
+            epoch_start_timestamp_ms,
         );
         // If we fail to sign the transaction locally for whatever reason, it's not recoverable.
         self.handle_transaction_impl(tx.clone(), epoch_store)
@@ -2622,6 +2645,7 @@ impl AuthorityState {
 
     async fn reopen_epoch_db(&self, new_committee: Committee) {
         info!(new_epoch = ?new_committee.epoch, "re-opening AuthorityEpochTables for new epoch");
+
         let epoch_tables = self
             .epoch_store()
             .new_at_next_epoch(self.name, new_committee);

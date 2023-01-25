@@ -61,8 +61,8 @@ module sui::governance_test_utils {
             balance::create_for_testing<SUI>(storage_fund_amount), // storage_fund
             1024, // max_validator_candidate_count
             0, // min_validator_stake
-            1, // storage_gas_price
             0, // stake subsidy
+            0, // epoch_start_timestamp_ms
         )
     }
 
@@ -93,14 +93,26 @@ module sui::governance_test_utils {
 
         let ctx = test_scenario::ctx(scenario);
 
-        sui_system::advance_epoch(&mut system_state, new_epoch, storage_charge, computation_charge, 0, 0, 0, 0, ctx);
+        sui_system::advance_epoch(&mut system_state, new_epoch, storage_charge, computation_charge, 0, 0, 0, 0, 0, ctx);
+        test_scenario::return_shared(system_state);
+    }
+
+    public fun advance_epoch_with_reward_amounts_and_subsidy_rate(
+        storage_charge: u64, computation_charge: u64, stake_subsidy_rate: u64, scenario: &mut Scenario
+    ) {
+        test_scenario::next_epoch(scenario, @0x0);
+        let new_epoch = tx_context::epoch(test_scenario::ctx(scenario));
+        let system_state = test_scenario::take_shared<SuiSystemState>(scenario);
+
+        let ctx = test_scenario::ctx(scenario);
+
+        sui_system::advance_epoch(&mut system_state, new_epoch, storage_charge, computation_charge, 0, 0, 0, stake_subsidy_rate, 0, ctx);
         test_scenario::return_shared(system_state);
     }
 
     public fun advance_epoch_with_reward_amounts_and_slashing_rates(
         storage_charge: u64,
         computation_charge: u64,
-        reward_slashing_threshold_bps: u64,
         reward_slashing_rate: u64,
         scenario: &mut Scenario
     ) {
@@ -111,8 +123,7 @@ module sui::governance_test_utils {
         let ctx = test_scenario::ctx(scenario);
 
         sui_system::advance_epoch(
-            &mut system_state, new_epoch, storage_charge, computation_charge, 0, 0,
-            reward_slashing_threshold_bps, reward_slashing_rate, ctx
+            &mut system_state, new_epoch, storage_charge, computation_charge, 0, 0, reward_slashing_rate, 0, 0, ctx
         );
         test_scenario::return_shared(system_state);
     }

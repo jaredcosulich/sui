@@ -27,7 +27,7 @@ use sui_types::messages::{
     VerifiedCertificate, VerifiedSignedTransaction,
 };
 use tracing::{debug, info, trace, warn};
-use typed_store::rocks::{DBBatch, DBMap, DBOptions, TypedStoreError};
+use typed_store::rocks::{DBBatch, DBMap, DBOptions, MetricConf, TypedStoreError};
 use typed_store::traits::{TableSummary, TypedStoreDebug};
 
 use crate::authority::authority_notify_read::NotifyRead;
@@ -63,6 +63,7 @@ use typed_store_derive::DBMapUtils;
 const LAST_CONSENSUS_INDEX_ADDR: u64 = 0;
 const RECONFIG_STATE_INDEX: u64 = 0;
 const FINAL_EPOCH_CHECKPOINT_INDEX: u64 = 0;
+pub const EPOCH_DB_PREFIX: &str = "epoch_";
 
 pub struct CertLockGuard(LockGuard);
 
@@ -226,15 +227,25 @@ pub struct AuthorityEpochTables {
 
 impl AuthorityEpochTables {
     pub fn open(epoch: EpochId, parent_path: &Path, db_options: Option<Options>) -> Self {
-        Self::open_tables_transactional(Self::path(epoch, parent_path), db_options, None)
+        Self::open_tables_transactional(
+            Self::path(epoch, parent_path),
+            MetricConf::with_db_name("epoch"),
+            db_options,
+            None,
+        )
     }
 
     pub fn open_readonly(epoch: EpochId, parent_path: &Path) -> AuthorityEpochTablesReadOnly {
-        Self::get_read_only_handle(Self::path(epoch, parent_path), None, None)
+        Self::get_read_only_handle(
+            Self::path(epoch, parent_path),
+            None,
+            None,
+            MetricConf::with_db_name("epoch"),
+        )
     }
 
     pub fn path(epoch: EpochId, parent_path: &Path) -> PathBuf {
-        parent_path.join(format!("epoch_{}", epoch))
+        parent_path.join(format!("{}{}", EPOCH_DB_PREFIX, epoch))
     }
 
     fn load_reconfig_state(&self) -> SuiResult<ReconfigState> {
@@ -304,6 +315,10 @@ impl AuthorityPerEpochStore {
             epoch_close_time: Default::default(),
             metrics,
         })
+    }
+
+    pub fn get_parent_path(&self) -> PathBuf {
+        self.parent_path.clone()
     }
 
     pub fn new_at_next_epoch(&self, name: AuthorityName, new_committee: Committee) -> Arc<Self> {
@@ -1587,6 +1602,10 @@ impl AuthorityPerEpochStore {
         self.metrics
             .epoch_last_transaction_cert_creation_time_ms
             .set(elapsed_ms);
+    }
+
+    pub(crate) fn record_is_safe_mode_metric(&self, safe_mode: bool) {
+        self.metrics.is_safe_mode.set(safe_mode as i64);
     }
 
     fn record_epoch_total_duration_metric(&self) {

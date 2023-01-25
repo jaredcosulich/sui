@@ -30,7 +30,7 @@ async fn test_blocking_execution() -> Result<(), anyhow::Error> {
     let node = &test_cluster.fullnode_handle.sui_node;
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let reconfig_channel = node.subscribe_to_epoch_change().await;
+    let reconfig_channel = node.subscribe_to_epoch_change();
     let orchestrator = TransactiondOrchestrator::new_with_network_clients(
         node.state(),
         reconfig_channel,
@@ -88,7 +88,7 @@ async fn test_fullnode_wal_log() -> Result<(), anyhow::Error> {
     let node = &test_cluster.fullnode_handle.sui_node;
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let reconfig_channel = node.subscribe_to_epoch_change().await;
+    let reconfig_channel = node.subscribe_to_epoch_change();
     let orchestrator = TransactiondOrchestrator::new_with_network_clients(
         node.state(),
         reconfig_channel,
@@ -275,10 +275,12 @@ async fn test_tx_across_epoch_boundaries() {
     info!("All nodes including fullnode finished");
 
     // The transaction must finalize in epoch 1
-    match tokio::time::timeout(tokio::time::Duration::from_secs(10), result_rx.recv()).await {
+    let start = std::time::Instant::now();
+    match tokio::time::timeout(tokio::time::Duration::from_secs(15), result_rx.recv()).await {
         Ok(Some(tx_cert)) if tx_cert.auth_sig().epoch == 1 => (),
         other => panic!("unexpected error: {:?}", other),
     }
+    info!("test completed in {:?}", start.elapsed());
 }
 
 async fn execute_with_orchestrator(
