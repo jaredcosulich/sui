@@ -75,7 +75,7 @@ pub mod primary_tests;
 pub const CHANNEL_CAPACITY: usize = 1_000;
 
 /// The number of shutdown receivers to create on startup. We need one per component loop.
-pub const NUM_SHUTDOWN_RECEIVERS: u64 = 25;
+pub const NUM_SHUTDOWN_RECEIVERS: u64 = 26;
 
 /// Maximum duration to fetch certificates from local storage.
 const FETCH_CERTIFICATES_MAX_HANDLER_TIME: Duration = Duration::from_secs(10);
@@ -344,14 +344,16 @@ impl Primary {
             quic_config.keep_alive_interval_ms = Some(5_000);
             let mut config = anemo::Config::default();
             config.quic = Some(quic_config);
-            // Set a default size limit of 8 MiB for all RPCs
-            // TODO: remove this and revert to default anemo max_frame_size once size
-            // limits are fully implemented on narwhal data structures.
-            config.max_frame_size = Some(8 << 20);
+            // Set the max_frame_size to be 2 GB to work around the issue of there being too many
+            // delegation events in the epoch change txn.
+            config.max_frame_size = Some(2 << 30);
             // Set a default timeout of 300s for all RPC requests
             config.inbound_request_timeout_ms = Some(300_000);
             config.outbound_request_timeout_ms = Some(300_000);
             config.shutdown_idle_timeout_ms = Some(1_000);
+            config.connectivity_check_interval_ms = Some(2_000);
+            config.connection_backoff_ms = Some(1_000);
+            config.max_connection_backoff_ms = Some(20_000);
             config
         };
 
@@ -502,6 +504,7 @@ impl Primary {
             parameters.header_num_of_batches_threshold,
             parameters.max_header_num_of_batches,
             parameters.max_header_delay,
+            parameters.min_header_delay,
             None,
             network_model,
             tx_shutdown.subscribe(),
@@ -583,6 +586,7 @@ impl Primary {
                 dag,
                 committee.clone(),
                 endpoint_metrics,
+                tx_shutdown.subscribe(),
             );
 
             handles.extend(vec![block_synchronizer_handle, consensus_api_handle]);
@@ -740,6 +744,9 @@ impl PrimaryReceiverHandler {
 
         // If requester has provided us with parent certificates, process them all
         // before proceeding.
+        self.metrics
+            .certificates_in_votes
+            .inc_by(request.body().parents.len() as u64);
         let mut notifies = Vec::new();
         for certificate in request.body().parents.clone() {
             if !self.deduplicate_and_verify(&certificate)? {

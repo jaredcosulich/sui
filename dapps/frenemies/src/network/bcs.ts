@@ -7,10 +7,12 @@ import {
   DELEGATION,
   GENERIC_COIN,
   LEADERBOARD,
+  OLD_SCORECARD,
   SCORECARD,
   SCORECARD_UPDATED,
   STAKED_SUI,
   SUI_SYSTEM,
+  SYSTEM_EPOCH_INFO,
 } from "./types";
 
 export const bcs = suiBcs
@@ -20,6 +22,14 @@ export const bcs = suiBcs
     epoch: "u64",
   })
   .registerStructType(SCORECARD, {
+    id: "address",
+    name: "string",
+    assignment: ASSIGNMENT,
+    score: "u16",
+    participation: "u16",
+    epoch: "u64",
+  })
+  .registerStructType(OLD_SCORECARD, {
     id: "address",
     name: "string",
     assignment: ASSIGNMENT,
@@ -54,7 +64,7 @@ export const bcs = suiBcs
   // Sui System + Validators schema
   .registerStructType(GENERIC_COIN, {
     id: "address",
-    value: "u64"
+    value: "u64",
   })
   .registerStructType(STAKED_SUI, {
     id: "address",
@@ -76,7 +86,17 @@ export const bcs = suiBcs
     epoch: "u64",
     validators: "validator_set::ValidatorSet",
   })
-
+  .registerStructType(SYSTEM_EPOCH_INFO, {
+    epoch: "u64",
+    referenceGasPrice: "u64",
+    totalStake: "u64",
+    storageFundInflows: "u64",
+    storageFundOutflows: "u64",
+    storageFundBalance: "u64",
+    stakeSubsidyAmount: "u64",
+    totalGasFees: "u64",
+    totalStakeRewards: "u64",
+  })
   .registerStructType("validator_set::ValidatorSet", {
     /** Total amount of stake from all active validators (not including delegation), at the beginning of the epoch. */
     totalValidatorStake: "u64",
@@ -96,7 +116,6 @@ export const bcs = suiBcs
      */
     // pendingDelegationSwitches: 'VecMap<ValidatorPair, table::Table>',
   })
-
   .registerStructType("validator_set::ValidatorPair", {
     from: "address",
     to: "address",

@@ -9,9 +9,10 @@ import { MetricGroup } from './MetricGroup';
 import { useNetwork } from '~/context';
 import { useAppsBackend } from '~/hooks/useAppsBackend';
 import { useGetSystemObject } from '~/hooks/useGetObject';
+import { useRpc } from '~/hooks/useRpc';
 import { Card } from '~/ui/Card';
 import { Heading } from '~/ui/Heading';
-import { Stats } from '~/ui/Stats';
+import { Stats, type StatsProps } from '~/ui/Stats';
 import { formatAmount } from '~/utils/formatAmount';
 import { GROWTHBOOK_FEATURES } from '~/utils/growthbook';
 
@@ -31,6 +32,15 @@ function roundFloat(number: number, decimals: number) {
     return parseFloat(number.toFixed(decimals));
 }
 
+// Simple wrapper around stats to avoid text wrapping:
+function StatsWrapper(props: StatsProps) {
+    return (
+        <div className="flex-shrink-0">
+            <Stats {...props} />
+        </div>
+    );
+}
+
 export function HomeMetrics() {
     const [network] = useNetwork();
     const enabled = useFeature(GROWTHBOOK_FEATURES.EXPLORER_METRICS).on;
@@ -38,16 +48,21 @@ export function HomeMetrics() {
     const request = useAppsBackend();
     const { data: systemData } = useGetSystemObject();
 
+    const rpc = useRpc();
+    const { data: gasData } = useQuery(['reference-gas-price'], () =>
+        rpc.getReferenceGasPrice()
+    );
+
     const { data: countsData } = useQuery(
         ['home', 'counts'],
         () => request<CountsResponse>('counts', { network }),
-        { enabled }
+        { enabled, refetchInterval: 60 * 1000 }
     );
 
     const { data: tpsData } = useQuery(
         ['home', 'tps-checkpoints'],
         () => request<TPSCheckpointResponse>('tps-checkpoints', { network }),
-        { enabled }
+        { enabled, refetchInterval: 10 * 1000 }
     );
 
     if (!enabled) return null;
@@ -60,50 +75,48 @@ export function HomeMetrics() {
 
             <div className="mt-8 space-y-7">
                 <MetricGroup label="Current">
-                    <Stats label="TPS" tooltip="Transactions per second">
+                    <StatsWrapper label="TPS" tooltip="Transactions per second">
                         {tpsData?.tps ? roundFloat(tpsData.tps, 2) : null}
-                    </Stats>
-                    <Stats label="Gas Price" tooltip="Current gas price">
-                        {systemData?.reference_gas_price
-                            ? `${systemData?.reference_gas_price} MIST`
-                            : null}
-                    </Stats>
-                    <Stats label="Epoch" tooltip="The current epoch">
+                    </StatsWrapper>
+                    <StatsWrapper label="Gas Price" tooltip="Current gas price">
+                        {gasData ? `${gasData} MIST` : null}
+                    </StatsWrapper>
+                    <StatsWrapper label="Epoch" tooltip="The current epoch">
                         {systemData?.epoch}
-                    </Stats>
-                    <Stats
+                    </StatsWrapper>
+                    <StatsWrapper
                         label="Checkpoint"
                         tooltip="The current checkpoint (updates every one min)"
                     >
                         {tpsData?.checkpoint}
-                    </Stats>
+                    </StatsWrapper>
                 </MetricGroup>
 
                 <MetricGroup label="Total">
-                    <Stats
+                    <StatsWrapper
                         label="Packages"
                         tooltip="Total packages counter (updates every one min)"
                     >
                         {formatAmount(countsData?.packages)}
-                    </Stats>
-                    <Stats
+                    </StatsWrapper>
+                    <StatsWrapper
                         label="Objects"
                         tooltip="Total objects counter (updates every one min)"
                     >
                         {formatAmount(countsData?.objects)}
-                    </Stats>
-                    <Stats
+                    </StatsWrapper>
+                    <StatsWrapper
                         label="Transactions"
                         tooltip="Total transactions counter (updates every one min)"
                     >
                         {formatAmount(countsData?.transactions)}
-                    </Stats>
-                    <Stats
+                    </StatsWrapper>
+                    <StatsWrapper
                         label="Addresses"
                         tooltip="Total addresses counter (updates every one min)"
                     >
                         {formatAmount(countsData?.addresses)}
-                    </Stats>
+                    </StatsWrapper>
                 </MetricGroup>
             </div>
         </Card>

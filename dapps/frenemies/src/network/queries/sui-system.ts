@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { normalizeSuiAddress } from "@mysten/sui.js";
-import { useRawObject } from "./use-raw";
-import { SuiSystem, SUI_SYSTEM as SUI_SYSTEM_TYPE } from "../types";
+import { useQuery } from "@tanstack/react-query";
+import provider from "../provider";
 
 /**
  * Address of the Sui System object.
@@ -11,9 +11,21 @@ import { SuiSystem, SUI_SYSTEM as SUI_SYSTEM_TYPE } from "../types";
  */
 export const SUI_SYSTEM_ID: string = normalizeSuiAddress("0x5");
 
-/**
- * Read the SuiSystem object.
- */
-export function useSuiSystem() {
-  return useRawObject<SuiSystem>(SUI_SYSTEM_ID, SUI_SYSTEM_TYPE);
+export function convertToString(raw?: string | number[] | null) {
+  if (!raw) return null;
+  if (typeof raw === 'string') return raw;
+  return String.fromCharCode(...raw);
+}
+
+export function useValidators() {
+  return useQuery(
+    ["validators"],
+    async () => {
+      return provider.getValidators();
+    },
+    {
+      refetchInterval: 60 * 1000,
+      staleTime: 5000,
+    }
+  );
 }

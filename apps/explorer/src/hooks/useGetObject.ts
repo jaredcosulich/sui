@@ -6,7 +6,7 @@ import {
     SuiObject,
     type GetObjectDataResponse,
     normalizeSuiAddress,
-    type ValidatorsFields,
+    type MoveSuiSystemObjectFields,
 } from '@mysten/sui.js';
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 
@@ -20,7 +20,7 @@ export function useGetSystemObject() {
         data &&
         is(data.details, SuiObject) &&
         data.details.data.dataType === 'moveObject'
-            ? (data.details.data.fields as ValidatorsFields)
+            ? (data.details.data.fields as MoveSuiSystemObjectFields)
             : null;
 
     return {
@@ -36,9 +36,7 @@ export function useGetObject(
     const normalizedObjId = normalizeSuiAddress(objectId);
     const response = useQuery(
         ['object', normalizedObjId],
-        async () => {
-            return rpc.getObject(normalizedObjId);
-        },
+        async () => rpc.getObject(normalizedObjId),
         { enabled: !!objectId }
     );
 

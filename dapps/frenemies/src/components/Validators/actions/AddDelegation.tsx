@@ -8,10 +8,12 @@ import {
 } from "@mysten/sui.js";
 import { useWalletKit } from "@mysten/wallet-kit";
 import { useMutation } from "@tanstack/react-query";
+import BigNumber from "bignumber.js";
+import provider from "../../../network/provider";
 import { SUI_SYSTEM_ID } from "../../../network/queries/sui-system";
-import { useMyType } from "../../../network/queries/use-raw";
-import { ObjectData } from "../../../network/rawObject";
-import { Coin, SUI_COIN } from "../../../network/types";
+import { useGetLatestCoins, useManageCoin } from "../../../utils/coins";
+import { formatBalance } from "../../../utils/format";
+import { StakeButton } from "../../StakeButton";
 
 interface Props {
   validator: SuiAddress;
@@ -19,16 +21,11 @@ interface Props {
   amount: string;
 }
 
-/**
- * Arguments required for AddDelegation transaction.
- */
-interface AddDelegationTx {
-  /** Amount of SUI to stake */
-  amount: string;
-  /** Validator to stake for */
-  validator: SuiAddress;
-  /** Coins to stake and use as Gas */
-  coins?: ObjectData<Coin>[] | null;
+const SUI_DECIMALS = 9;
+const GAS_BUDGET = 100000n;
+
+function toMist(sui: string) {
+  return BigInt(new BigNumber(sui).shiftedBy(SUI_DECIMALS).toString());
 }
 
 /**
@@ -36,53 +33,64 @@ interface AddDelegationTx {
  * Can only be performed if there's no `StakedSui` (hence no `Delegation`) object.
  */
 export function AddDelegation({ validator, amount }: Props) {
-  const { currentAccount, signAndExecuteTransaction } = useWalletKit();
-  const { data: coins } = useMyType<Coin>(SUI_COIN, currentAccount);
+  const manageCoins = useManageCoin();
+  const { signAndExecuteTransaction } = useWalletKit();
+  const getLatestCoins = useGetLatestCoins();
 
-  const stakeFor = useMutation(
-    ["stake-for-validator"],
-    async ({ validator, amount, coins }: AddDelegationTx) => {
-      if (!coins || coins.length < 2) {
-        return null;
-      }
+  const stake = useMutation(["stake-for-validator"], async () => {
+    const coins = await getLatestCoins();
 
-      // using the smallest coin as the Gas payment (DESC order, last element popped)
-      const [gas, ...restCoins] = [...coins].sort((a, b) =>
-        Number(b.data.value - a.data.value)
+    if (!coins || !coins.length) {
+      throw new Error("No coins found.");
+    }
+
+    const totalBalance = coins.reduce((acc, coin) => (acc += BigInt(coin.balance)), 0n);
+
+    const mistAmount = toMist(amount);
+
+    const gasPrice = await provider.getReferenceGasPrice();
+    const gasRequired = GAS_BUDGET * BigInt(gasPrice);
+
+    if (mistAmount > totalBalance) {
+      throw new Error(
+        `Requested amount ${formatBalance(
+          mistAmount,
+          SUI_DECIMALS
+        )} is bigger than max ${formatBalance(totalBalance, SUI_DECIMALS)}`
       );
+    }
 
-      await signAndExecuteTransaction({
+    const stakeCoin = await manageCoins(coins, mistAmount, gasRequired);
+
+    await signAndExecuteTransaction(
+      {
         kind: "moveCall",
         data: {
           packageObjectId: SUI_FRAMEWORK_ADDRESS,
           module: "sui_system",
           function: "request_add_delegation_mul_coin",
-          gasPayment: normalizeSuiAddress(gas.reference.objectId),
           typeArguments: [],
-          gasBudget: 10000,
+          gasBudget: Number(GAS_BUDGET),
           arguments: [
             SUI_SYSTEM_ID,
-            restCoins.map((c) => normalizeSuiAddress(c.reference.objectId)),
-            [amount], // Option<u64> // [amt] = Some(amt)
+            [stakeCoin],
+            [mistAmount.toString()], // Option<u64> // [amt] = Some(amt)
             normalizeSuiAddress(validator),
           ],
         },
-      });
-    }
-  );
-
-  const handleStake = () => {
-    stakeFor.mutate({ validator, coins, amount });
-  };
+      },
+      {
+        // requestType: "WaitForEffectsCert",
+      }
+    );
+  });
 
   return (
-    <button
-      // we can only stake if there's at least 2 coins (one gas and one stake)
-      disabled={!coins?.length || coins.length < 2}
-      onClick={handleStake}
-      className="absolute right-0 flex py-1 px-4 text-sm leading-none bg-gradient-to-b from-[#D0E8EF] to-[#B9DAE4] opacity-60 hover:opacity-100  uppercase mr-2 rounded-[4px]"
+    <StakeButton
+      disabled={!amount || stake.isLoading}
+      onClick={() => stake.mutate()}
     >
       Stake
-    </button>
+    </StakeButton>
   );
 }

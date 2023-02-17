@@ -326,7 +326,6 @@ impl Core {
         header_store
             .async_write(header.digest(), header.clone())
             .await;
-        metrics.headers_proposed.inc();
         metrics.proposed_header_round.set(header.round as i64);
 
         // Reset the votes aggregator and sign our own header.
@@ -480,8 +479,10 @@ impl Core {
 
         // NOTE: This log entry is used to compute performance.
         debug!(
-            "Header {:?} took {} seconds to be materialized to a certificate {:?}",
+            "Header {:?} at round {} with {} batches, took {} seconds to be materialized to a certificate {:?}",
             certificate.header.digest(),
+            certificate.header.round,
+            certificate.header.payload.len(),
             header_to_certificate_duration,
             certificate.digest()
         );

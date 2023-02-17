@@ -3,10 +3,10 @@
 
 import BigNumber from 'bignumber.js';
 
-import type { ActiveValidator, DelegatedStake } from '@mysten/sui.js';
+import type { MoveActiveValidator, DelegatedStake } from '@mysten/sui.js';
 
 export function getStakingRewards(
-    activeValidators: ActiveValidator[],
+    activeValidators: MoveActiveValidator[],
     delegation: DelegatedStake
 ) {
     if (
@@ -41,6 +41,6 @@ export function getStakingRewards(
         .multipliedBy(suiBalance)
         .dividedBy(delegationTokenSupply);
 
-    const earnToken = currentSuiWorth.decimalPlaces(0, 1).minus(pricipalAmout);
-    return earnToken.toNumber();
+    const earnToken = currentSuiWorth.minus(pricipalAmout);
+    return earnToken.decimalPlaces(0, BigNumber.ROUND_DOWN).toNumber();
 }
