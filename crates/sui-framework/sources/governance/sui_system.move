@@ -6,7 +6,7 @@ module sui::sui_system {
     use sui::clock::{Self, Clock};
     use sui::coin::{Self, Coin};
     use sui::staking_pool::{Delegation, StakedSui};
-    use sui::object::{Self, UID};
+    use sui::object::{Self, ID, UID};
     use sui::locked_coin::{Self, LockedCoin};
     use sui::sui::SUI;
     use sui::transfer;
@@ -23,7 +23,7 @@ module sui::sui_system {
     use sui::epoch_time_lock;
     use sui::pay;
     use sui::event;
-    use sui::staking_pool;
+    use sui::table::Table;
 
     friend sui::genesis;
 
@@ -96,13 +96,13 @@ module sui::sui_system {
     }
 
     // Errors
-    const ENOT_VALIDATOR: u64 = 0;
-    const ELIMIT_EXCEEDED: u64 = 1;
-    const EEPOCH_NUMBER_MISMATCH: u64 = 2;
-    const ECANNOT_REPORT_ONESELF: u64 = 3;
-    const EREPORT_RECORD_NOT_FOUND: u64 = 4;
-    const EBPS_TOO_LARGE: u64 = 5;
-    const ESTAKED_SUI_FROM_WRONG_EPOCH: u64 = 6;
+    const ENotValidator: u64 = 0;
+    const ELimitExceeded: u64 = 1;
+    const EEpochNumberMismatch: u64 = 2;
+    const ECannotReportOneself: u64 = 3;
+    const EReportRecordNotFound: u64 = 4;
+    const EBpsTooLarge: u64 = 5;
+    const EStakedSuiFromWrongEpoch: u64 = 6;
 
     const BASIS_POINT_DENOMINATOR: u128 = 10000;
 
@@ -119,8 +119,9 @@ module sui::sui_system {
         initial_stake_subsidy_amount: u64,
         protocol_version: u64,
         epoch_start_timestamp_ms: u64,
+        ctx: &mut TxContext,
     ) {
-        let validators = validator_set::new(validators);
+        let validators = validator_set::new(validators, ctx);
         let reference_gas_price = validator_set::derive_reference_gas_price(&validators);
         let state = SuiSystemState {
             // Use a hardcoded ID.
@@ -170,12 +171,12 @@ module sui::sui_system {
     ) {
         assert!(
             validator_set::next_epoch_validator_count(&self.validators) < self.parameters.max_validator_candidate_count,
-            ELIMIT_EXCEEDED,
+            ELimitExceeded,
         );
         let stake_amount = coin::value(&stake);
         assert!(
             stake_amount >= self.parameters.min_validator_stake,
-            ELIMIT_EXCEEDED,
+            ELimitExceeded,
         );
         let validator = validator::new(
             tx_context::sender(ctx),
@@ -366,33 +367,6 @@ module sui::sui_system {
         );
     }
 
-    // Switch delegation from the current validator to a new one.
-    public entry fun request_switch_delegation(
-        self: &mut SuiSystemState,
-        delegation: Delegation,
-        staked_sui: StakedSui,
-        new_validator_address: address,
-        ctx: &mut TxContext,
-    ) {
-        validator_set::request_switch_delegation(
-            &mut self.validators, delegation, staked_sui, new_validator_address, ctx
-        );
-    }
-
-    /// Cancel a delegation requests sent during the current epoch.
-    public entry fun cancel_delegation_request(
-        self: &mut SuiSystemState,
-        staked_sui: StakedSui,
-        ctx: &mut TxContext,
-    ) {
-        // The delegation request has to have happened within the current epoch.
-        assert!(staking_pool::delegation_request_epoch(&staked_sui) == self.epoch, ESTAKED_SUI_FROM_WRONG_EPOCH);
-        validator_set::cancel_delegation_request(
-            &mut self.validators, staked_sui, ctx
-        );
-    }
-
-
     /// Report a validator as a bad or non-performant actor in the system.
     /// Succeeds iff both the sender and the input `validator_addr` are active validators
     /// and they are not the same address. This function is idempotent within an epoch.
@@ -403,9 +377,9 @@ module sui::sui_system {
     ) {
         let sender = tx_context::sender(ctx);
         // Both the reporter and the reported have to be validators.
-        assert!(validator_set::is_active_validator(&self.validators, sender), ENOT_VALIDATOR);
-        assert!(validator_set::is_active_validator(&self.validators, validator_addr), ENOT_VALIDATOR);
-        assert!(sender != validator_addr, ECANNOT_REPORT_ONESELF);
+        assert!(validator_set::is_active_validator(&self.validators, sender), ENotValidator);
+        assert!(validator_set::is_active_validator(&self.validators, validator_addr), ENotValidator);
+        assert!(sender != validator_addr, ECannotReportOneself);
 
         if (!vec_map::contains(&self.validator_report_records, &validator_addr)) {
             vec_map::insert(&mut self.validator_report_records, validator_addr, vec_set::singleton(sender));
@@ -426,9 +400,9 @@ module sui::sui_system {
     ) {
         let sender = tx_context::sender(ctx);
 
-        assert!(vec_map::contains(&self.validator_report_records, &validator_addr), EREPORT_RECORD_NOT_FOUND);
+        assert!(vec_map::contains(&self.validator_report_records, &validator_addr), EReportRecordNotFound);
         let reporters = vec_map::get_mut(&mut self.validator_report_records, &validator_addr);
-        assert!(vec_set::contains(reporters, &sender), EREPORT_RECORD_NOT_FOUND);
+        assert!(vec_set::contains(reporters, &sender), EReportRecordNotFound);
         vec_set::remove(reporters, &sender);
     }
 
@@ -463,7 +437,7 @@ module sui::sui_system {
         assert!(
             storage_fund_reinvest_rate <= bps_denominator_u64
             && reward_slashing_rate <= bps_denominator_u64,
-            EBPS_TOO_LARGE,
+            EBpsTooLarge,
         );
 
         let delegation_stake = validator_set::total_delegation_stake(&self.validators);
@@ -604,6 +578,17 @@ module sui::sui_system {
     /// Aborts if `validator_addr` is not an active validator.
     public fun validator_stake_amount(self: &SuiSystemState, validator_addr: address): u64 {
         validator_set::validator_stake_amount(&self.validators, validator_addr)
+    }
+
+    /// Returns the staking pool id of a given validator.
+    /// Aborts if `validator_addr` is not an active validator.
+    public fun validator_staking_pool_id(self: &SuiSystemState, validator_addr: address): ID {
+        validator_set::validator_staking_pool_id(&self.validators, validator_addr)
+    }
+
+    /// Returns reference to the staking pool mappings that map pool ids to active validator addresses
+    public fun validator_staking_pool_mappings(self: &SuiSystemState): &Table<ID, address> {
+        validator_set::staking_pool_mappings(&self.validators)
     }
 
     /// Returns all the validators who have reported `addr` this epoch.

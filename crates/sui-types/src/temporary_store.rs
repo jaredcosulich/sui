@@ -17,6 +17,7 @@ use crate::coin::Coin;
 use crate::committee::EpochId;
 use crate::event::BalanceChangeType;
 use crate::storage::SingleTxContext;
+use crate::sui_system_state::{get_sui_system_state, SuiSystemState};
 use crate::{
     base_types::{
         ObjectDigest, ObjectID, ObjectRef, SequenceNumber, SuiAddress, TransactionDigest,
@@ -77,6 +78,10 @@ impl InnerTemporaryStore {
                 }
             })
             .collect()
+    }
+
+    pub fn get_sui_system_state_object(&self) -> Option<SuiSystemState> {
+        get_sui_system_state(&self.written).ok()
     }
 }
 
@@ -544,11 +549,17 @@ impl<S> TemporaryStore<S> {
 
         let mut deleted = vec![];
         let mut wrapped = vec![];
+        let mut unwrapped_then_deleted = vec![];
         for (id, (version, kind)) in &inner.deleted {
             match kind {
-                DeleteKind::Normal | DeleteKind::UnwrapThenDelete => {
+                DeleteKind::Normal => {
                     deleted.push((*id, *version, ObjectDigest::OBJECT_DIGEST_DELETED))
                 }
+                DeleteKind::UnwrapThenDelete => unwrapped_then_deleted.push((
+                    *id,
+                    *version,
+                    ObjectDigest::OBJECT_DIGEST_DELETED,
+                )),
                 DeleteKind::Wrap => {
                     wrapped.push((*id, *version, ObjectDigest::OBJECT_DIGEST_WRAPPED))
                 }
@@ -566,6 +577,7 @@ impl<S> TemporaryStore<S> {
             mutated,
             unwrapped,
             deleted,
+            unwrapped_then_deleted,
             wrapped,
             gas_object: updated_gas_object_info,
             events,
@@ -871,7 +883,7 @@ pub fn empty_for_testing() -> TemporaryStore<()> {
         (),
         InputObjects::new(Vec::new()),
         TransactionDigest::genesis(),
-        ProtocolConfig::get_for_min_version(),
+        &ProtocolConfig::get_for_min_version(),
     )
 }
 
@@ -882,6 +894,6 @@ pub fn with_input_objects_for_testing(input_objects: InputObjects) -> TemporaryS
         (),
         input_objects,
         TransactionDigest::genesis(),
-        ProtocolConfig::get_for_min_version(),
+        &ProtocolConfig::get_for_min_version(),
     )
 }

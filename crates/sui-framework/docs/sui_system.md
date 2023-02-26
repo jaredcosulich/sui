@@ -22,8 +22,6 @@
 -  [Function `request_add_delegation_with_locked_coin`](#0x2_sui_system_request_add_delegation_with_locked_coin)
 -  [Function `request_add_delegation_mul_locked_coin`](#0x2_sui_system_request_add_delegation_mul_locked_coin)
 -  [Function `request_withdraw_delegation`](#0x2_sui_system_request_withdraw_delegation)
--  [Function `request_switch_delegation`](#0x2_sui_system_request_switch_delegation)
--  [Function `cancel_delegation_request`](#0x2_sui_system_cancel_delegation_request)
 -  [Function `report_validator`](#0x2_sui_system_report_validator)
 -  [Function `undo_report_validator`](#0x2_sui_system_undo_report_validator)
 -  [Function `advance_epoch`](#0x2_sui_system_advance_epoch)
@@ -33,6 +31,8 @@
 -  [Function `epoch_start_timestamp_ms`](#0x2_sui_system_epoch_start_timestamp_ms)
 -  [Function `validator_delegate_amount`](#0x2_sui_system_validator_delegate_amount)
 -  [Function `validator_stake_amount`](#0x2_sui_system_validator_stake_amount)
+-  [Function `validator_staking_pool_id`](#0x2_sui_system_validator_staking_pool_id)
+-  [Function `validator_staking_pool_mappings`](#0x2_sui_system_validator_staking_pool_mappings)
 -  [Function `get_reporters_of`](#0x2_sui_system_get_reporters_of)
 -  [Function `extract_coin_balance`](#0x2_sui_system_extract_coin_balance)
 -  [Function `extract_locked_coin_balance`](#0x2_sui_system_extract_locked_coin_balance)
@@ -52,6 +52,7 @@
 <b>use</b> <a href="stake_subsidy.md#0x2_stake_subsidy">0x2::stake_subsidy</a>;
 <b>use</b> <a href="staking_pool.md#0x2_staking_pool">0x2::staking_pool</a>;
 <b>use</b> <a href="sui.md#0x2_sui">0x2::sui</a>;
+<b>use</b> <a href="table.md#0x2_table">0x2::table</a>;
 <b>use</b> <a href="transfer.md#0x2_transfer">0x2::transfer</a>;
 <b>use</b> <a href="tx_context.md#0x2_tx_context">0x2::tx_context</a>;
 <b>use</b> <a href="validator.md#0x2_validator">0x2::validator</a>;
@@ -296,65 +297,65 @@ the epoch advancement transaction.
 
 
 
-<a name="0x2_sui_system_EBPS_TOO_LARGE"></a>
+<a name="0x2_sui_system_EBpsTooLarge"></a>
 
 
 
-<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_EBPS_TOO_LARGE">EBPS_TOO_LARGE</a>: u64 = 5;
+<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_EBpsTooLarge">EBpsTooLarge</a>: u64 = 5;
 </code></pre>
 
 
 
-<a name="0x2_sui_system_ECANNOT_REPORT_ONESELF"></a>
+<a name="0x2_sui_system_ECannotReportOneself"></a>
 
 
 
-<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_ECANNOT_REPORT_ONESELF">ECANNOT_REPORT_ONESELF</a>: u64 = 3;
+<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_ECannotReportOneself">ECannotReportOneself</a>: u64 = 3;
 </code></pre>
 
 
 
-<a name="0x2_sui_system_EEPOCH_NUMBER_MISMATCH"></a>
+<a name="0x2_sui_system_EEpochNumberMismatch"></a>
 
 
 
-<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_EEPOCH_NUMBER_MISMATCH">EEPOCH_NUMBER_MISMATCH</a>: u64 = 2;
+<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_EEpochNumberMismatch">EEpochNumberMismatch</a>: u64 = 2;
 </code></pre>
 
 
 
-<a name="0x2_sui_system_ELIMIT_EXCEEDED"></a>
+<a name="0x2_sui_system_ELimitExceeded"></a>
 
 
 
-<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_ELIMIT_EXCEEDED">ELIMIT_EXCEEDED</a>: u64 = 1;
+<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_ELimitExceeded">ELimitExceeded</a>: u64 = 1;
 </code></pre>
 
 
 
-<a name="0x2_sui_system_ENOT_VALIDATOR"></a>
+<a name="0x2_sui_system_ENotValidator"></a>
 
 
 
-<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_ENOT_VALIDATOR">ENOT_VALIDATOR</a>: u64 = 0;
+<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_ENotValidator">ENotValidator</a>: u64 = 0;
 </code></pre>
 
 
 
-<a name="0x2_sui_system_EREPORT_RECORD_NOT_FOUND"></a>
+<a name="0x2_sui_system_EReportRecordNotFound"></a>
 
 
 
-<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_EREPORT_RECORD_NOT_FOUND">EREPORT_RECORD_NOT_FOUND</a>: u64 = 4;
+<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_EReportRecordNotFound">EReportRecordNotFound</a>: u64 = 4;
 </code></pre>
 
 
 
-<a name="0x2_sui_system_ESTAKED_SUI_FROM_WRONG_EPOCH"></a>
+<a name="0x2_sui_system_EStakedSuiFromWrongEpoch"></a>
 
 
 
-<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_ESTAKED_SUI_FROM_WRONG_EPOCH">ESTAKED_SUI_FROM_WRONG_EPOCH</a>: u64 = 6;
+<pre><code><b>const</b> <a href="sui_system.md#0x2_sui_system_EStakedSuiFromWrongEpoch">EStakedSuiFromWrongEpoch</a>: u64 = 6;
 </code></pre>
 
 
@@ -367,7 +368,7 @@ Create a new SuiSystemState object and make it shared.
 This function will be called only once in genesis.
 
 
-<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="sui_system.md#0x2_sui_system_create">create</a>(validators: <a href="">vector</a>&lt;<a href="validator.md#0x2_validator_Validator">validator::Validator</a>&gt;, sui_supply: <a href="balance.md#0x2_balance_Supply">balance::Supply</a>&lt;<a href="sui.md#0x2_sui_SUI">sui::SUI</a>&gt;, storage_fund: <a href="balance.md#0x2_balance_Balance">balance::Balance</a>&lt;<a href="sui.md#0x2_sui_SUI">sui::SUI</a>&gt;, max_validator_candidate_count: u64, min_validator_stake: u64, initial_stake_subsidy_amount: u64, protocol_version: u64, epoch_start_timestamp_ms: u64)
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="sui_system.md#0x2_sui_system_create">create</a>(validators: <a href="">vector</a>&lt;<a href="validator.md#0x2_validator_Validator">validator::Validator</a>&gt;, sui_supply: <a href="balance.md#0x2_balance_Supply">balance::Supply</a>&lt;<a href="sui.md#0x2_sui_SUI">sui::SUI</a>&gt;, storage_fund: <a href="balance.md#0x2_balance_Balance">balance::Balance</a>&lt;<a href="sui.md#0x2_sui_SUI">sui::SUI</a>&gt;, max_validator_candidate_count: u64, min_validator_stake: u64, initial_stake_subsidy_amount: u64, protocol_version: u64, epoch_start_timestamp_ms: u64, ctx: &<b>mut</b> <a href="tx_context.md#0x2_tx_context_TxContext">tx_context::TxContext</a>)
 </code></pre>
 
 
@@ -385,8 +386,9 @@ This function will be called only once in genesis.
     initial_stake_subsidy_amount: u64,
     protocol_version: u64,
     epoch_start_timestamp_ms: u64,
+    ctx: &<b>mut</b> TxContext,
 ) {
-    <b>let</b> validators = <a href="validator_set.md#0x2_validator_set_new">validator_set::new</a>(validators);
+    <b>let</b> validators = <a href="validator_set.md#0x2_validator_set_new">validator_set::new</a>(validators, ctx);
     <b>let</b> reference_gas_price = <a href="validator_set.md#0x2_validator_set_derive_reference_gas_price">validator_set::derive_reference_gas_price</a>(&validators);
     <b>let</b> state = <a href="sui_system.md#0x2_sui_system_SuiSystemState">SuiSystemState</a> {
         // Use a hardcoded ID.
@@ -452,12 +454,12 @@ The amount of stake in the <code><a href="validator.md#0x2_validator">validator<
 ) {
     <b>assert</b>!(
         <a href="validator_set.md#0x2_validator_set_next_epoch_validator_count">validator_set::next_epoch_validator_count</a>(&self.validators) &lt; self.parameters.max_validator_candidate_count,
-        <a href="sui_system.md#0x2_sui_system_ELIMIT_EXCEEDED">ELIMIT_EXCEEDED</a>,
+        <a href="sui_system.md#0x2_sui_system_ELimitExceeded">ELimitExceeded</a>,
     );
     <b>let</b> stake_amount = <a href="coin.md#0x2_coin_value">coin::value</a>(&<a href="stake.md#0x2_stake">stake</a>);
     <b>assert</b>!(
         stake_amount &gt;= self.parameters.min_validator_stake,
-        <a href="sui_system.md#0x2_sui_system_ELIMIT_EXCEEDED">ELIMIT_EXCEEDED</a>,
+        <a href="sui_system.md#0x2_sui_system_ELimitExceeded">ELimitExceeded</a>,
     );
     <b>let</b> <a href="validator.md#0x2_validator">validator</a> = <a href="validator.md#0x2_validator_new">validator::new</a>(
         <a href="tx_context.md#0x2_tx_context_sender">tx_context::sender</a>(ctx),
@@ -873,71 +875,6 @@ Withdraw some portion of a delegation from a validator's staking pool.
 
 </details>
 
-<a name="0x2_sui_system_request_switch_delegation"></a>
-
-## Function `request_switch_delegation`
-
-
-
-<pre><code><b>public</b> entry <b>fun</b> <a href="sui_system.md#0x2_sui_system_request_switch_delegation">request_switch_delegation</a>(self: &<b>mut</b> <a href="sui_system.md#0x2_sui_system_SuiSystemState">sui_system::SuiSystemState</a>, delegation: <a href="staking_pool.md#0x2_staking_pool_Delegation">staking_pool::Delegation</a>, staked_sui: <a href="staking_pool.md#0x2_staking_pool_StakedSui">staking_pool::StakedSui</a>, new_validator_address: <b>address</b>, ctx: &<b>mut</b> <a href="tx_context.md#0x2_tx_context_TxContext">tx_context::TxContext</a>)
-</code></pre>
-
-
-
-<details>
-<summary>Implementation</summary>
-
-
-<pre><code><b>public</b> entry <b>fun</b> <a href="sui_system.md#0x2_sui_system_request_switch_delegation">request_switch_delegation</a>(
-    self: &<b>mut</b> <a href="sui_system.md#0x2_sui_system_SuiSystemState">SuiSystemState</a>,
-    delegation: Delegation,
-    staked_sui: StakedSui,
-    new_validator_address: <b>address</b>,
-    ctx: &<b>mut</b> TxContext,
-) {
-    <a href="validator_set.md#0x2_validator_set_request_switch_delegation">validator_set::request_switch_delegation</a>(
-        &<b>mut</b> self.validators, delegation, staked_sui, new_validator_address, ctx
-    );
-}
-</code></pre>
-
-
-
-</details>
-
-<a name="0x2_sui_system_cancel_delegation_request"></a>
-
-## Function `cancel_delegation_request`
-
-Cancel a delegation requests sent during the current epoch.
-
-
-<pre><code><b>public</b> entry <b>fun</b> <a href="sui_system.md#0x2_sui_system_cancel_delegation_request">cancel_delegation_request</a>(self: &<b>mut</b> <a href="sui_system.md#0x2_sui_system_SuiSystemState">sui_system::SuiSystemState</a>, staked_sui: <a href="staking_pool.md#0x2_staking_pool_StakedSui">staking_pool::StakedSui</a>, ctx: &<b>mut</b> <a href="tx_context.md#0x2_tx_context_TxContext">tx_context::TxContext</a>)
-</code></pre>
-
-
-
-<details>
-<summary>Implementation</summary>
-
-
-<pre><code><b>public</b> entry <b>fun</b> <a href="sui_system.md#0x2_sui_system_cancel_delegation_request">cancel_delegation_request</a>(
-    self: &<b>mut</b> <a href="sui_system.md#0x2_sui_system_SuiSystemState">SuiSystemState</a>,
-    staked_sui: StakedSui,
-    ctx: &<b>mut</b> TxContext,
-) {
-    // The delegation request <b>has</b> <b>to</b> have happened within the current epoch.
-    <b>assert</b>!(<a href="staking_pool.md#0x2_staking_pool_delegation_request_epoch">staking_pool::delegation_request_epoch</a>(&staked_sui) == self.epoch, <a href="sui_system.md#0x2_sui_system_ESTAKED_SUI_FROM_WRONG_EPOCH">ESTAKED_SUI_FROM_WRONG_EPOCH</a>);
-    <a href="validator_set.md#0x2_validator_set_cancel_delegation_request">validator_set::cancel_delegation_request</a>(
-        &<b>mut</b> self.validators, staked_sui, ctx
-    );
-}
-</code></pre>
-
-
-
-</details>
-
 <a name="0x2_sui_system_report_validator"></a>
 
 ## Function `report_validator`
@@ -963,9 +900,9 @@ and they are not the same address. This function is idempotent within an epoch.
 ) {
     <b>let</b> sender = <a href="tx_context.md#0x2_tx_context_sender">tx_context::sender</a>(ctx);
     // Both the reporter and the reported have <b>to</b> be validators.
-    <b>assert</b>!(<a href="validator_set.md#0x2_validator_set_is_active_validator">validator_set::is_active_validator</a>(&self.validators, sender), <a href="sui_system.md#0x2_sui_system_ENOT_VALIDATOR">ENOT_VALIDATOR</a>);
-    <b>assert</b>!(<a href="validator_set.md#0x2_validator_set_is_active_validator">validator_set::is_active_validator</a>(&self.validators, validator_addr), <a href="sui_system.md#0x2_sui_system_ENOT_VALIDATOR">ENOT_VALIDATOR</a>);
-    <b>assert</b>!(sender != validator_addr, <a href="sui_system.md#0x2_sui_system_ECANNOT_REPORT_ONESELF">ECANNOT_REPORT_ONESELF</a>);
+    <b>assert</b>!(<a href="validator_set.md#0x2_validator_set_is_active_validator">validator_set::is_active_validator</a>(&self.validators, sender), <a href="sui_system.md#0x2_sui_system_ENotValidator">ENotValidator</a>);
+    <b>assert</b>!(<a href="validator_set.md#0x2_validator_set_is_active_validator">validator_set::is_active_validator</a>(&self.validators, validator_addr), <a href="sui_system.md#0x2_sui_system_ENotValidator">ENotValidator</a>);
+    <b>assert</b>!(sender != validator_addr, <a href="sui_system.md#0x2_sui_system_ECannotReportOneself">ECannotReportOneself</a>);
 
     <b>if</b> (!<a href="vec_map.md#0x2_vec_map_contains">vec_map::contains</a>(&self.validator_report_records, &validator_addr)) {
         <a href="vec_map.md#0x2_vec_map_insert">vec_map::insert</a>(&<b>mut</b> self.validator_report_records, validator_addr, <a href="vec_set.md#0x2_vec_set_singleton">vec_set::singleton</a>(sender));
@@ -1006,9 +943,9 @@ Undo a <code>report_validator</code> action. Aborts if the sender has not report
 ) {
     <b>let</b> sender = <a href="tx_context.md#0x2_tx_context_sender">tx_context::sender</a>(ctx);
 
-    <b>assert</b>!(<a href="vec_map.md#0x2_vec_map_contains">vec_map::contains</a>(&self.validator_report_records, &validator_addr), <a href="sui_system.md#0x2_sui_system_EREPORT_RECORD_NOT_FOUND">EREPORT_RECORD_NOT_FOUND</a>);
+    <b>assert</b>!(<a href="vec_map.md#0x2_vec_map_contains">vec_map::contains</a>(&self.validator_report_records, &validator_addr), <a href="sui_system.md#0x2_sui_system_EReportRecordNotFound">EReportRecordNotFound</a>);
     <b>let</b> reporters = <a href="vec_map.md#0x2_vec_map_get_mut">vec_map::get_mut</a>(&<b>mut</b> self.validator_report_records, &validator_addr);
-    <b>assert</b>!(<a href="vec_set.md#0x2_vec_set_contains">vec_set::contains</a>(reporters, &sender), <a href="sui_system.md#0x2_sui_system_EREPORT_RECORD_NOT_FOUND">EREPORT_RECORD_NOT_FOUND</a>);
+    <b>assert</b>!(<a href="vec_set.md#0x2_vec_set_contains">vec_set::contains</a>(reporters, &sender), <a href="sui_system.md#0x2_sui_system_EReportRecordNotFound">EReportRecordNotFound</a>);
     <a href="vec_set.md#0x2_vec_set_remove">vec_set::remove</a>(reporters, &sender);
 }
 </code></pre>
@@ -1063,7 +1000,7 @@ gas coins.
     <b>assert</b>!(
         storage_fund_reinvest_rate &lt;= bps_denominator_u64
         && reward_slashing_rate &lt;= bps_denominator_u64,
-        <a href="sui_system.md#0x2_sui_system_EBPS_TOO_LARGE">EBPS_TOO_LARGE</a>,
+        <a href="sui_system.md#0x2_sui_system_EBpsTooLarge">EBpsTooLarge</a>,
     );
 
     <b>let</b> delegation_stake = <a href="validator_set.md#0x2_validator_set_total_delegation_stake">validator_set::total_delegation_stake</a>(&self.validators);
@@ -1324,6 +1261,57 @@ Aborts if <code>validator_addr</code> is not an active validator.
 
 <pre><code><b>public</b> <b>fun</b> <a href="sui_system.md#0x2_sui_system_validator_stake_amount">validator_stake_amount</a>(self: &<a href="sui_system.md#0x2_sui_system_SuiSystemState">SuiSystemState</a>, validator_addr: <b>address</b>): u64 {
     <a href="validator_set.md#0x2_validator_set_validator_stake_amount">validator_set::validator_stake_amount</a>(&self.validators, validator_addr)
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="0x2_sui_system_validator_staking_pool_id"></a>
+
+## Function `validator_staking_pool_id`
+
+Returns the staking pool id of a given validator.
+Aborts if <code>validator_addr</code> is not an active validator.
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="sui_system.md#0x2_sui_system_validator_staking_pool_id">validator_staking_pool_id</a>(self: &<a href="sui_system.md#0x2_sui_system_SuiSystemState">sui_system::SuiSystemState</a>, validator_addr: <b>address</b>): <a href="object.md#0x2_object_ID">object::ID</a>
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="sui_system.md#0x2_sui_system_validator_staking_pool_id">validator_staking_pool_id</a>(self: &<a href="sui_system.md#0x2_sui_system_SuiSystemState">SuiSystemState</a>, validator_addr: <b>address</b>): ID {
+    <a href="validator_set.md#0x2_validator_set_validator_staking_pool_id">validator_set::validator_staking_pool_id</a>(&self.validators, validator_addr)
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="0x2_sui_system_validator_staking_pool_mappings"></a>
+
+## Function `validator_staking_pool_mappings`
+
+Returns reference to the staking pool mappings that map pool ids to active validator addresses
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="sui_system.md#0x2_sui_system_validator_staking_pool_mappings">validator_staking_pool_mappings</a>(self: &<a href="sui_system.md#0x2_sui_system_SuiSystemState">sui_system::SuiSystemState</a>): &<a href="table.md#0x2_table_Table">table::Table</a>&lt;<a href="object.md#0x2_object_ID">object::ID</a>, <b>address</b>&gt;
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="sui_system.md#0x2_sui_system_validator_staking_pool_mappings">validator_staking_pool_mappings</a>(self: &<a href="sui_system.md#0x2_sui_system_SuiSystemState">SuiSystemState</a>): &Table&lt;ID, <b>address</b>&gt; {
+    <a href="validator_set.md#0x2_validator_set_staking_pool_mappings">validator_set::staking_pool_mappings</a>(&self.validators)
 }
 </code></pre>
 

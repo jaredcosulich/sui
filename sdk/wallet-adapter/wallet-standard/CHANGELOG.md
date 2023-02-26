@@ -1,5 +1,36 @@
 # @mysten/wallet-standard
 
+## 0.4.3
+
+### Patch Changes
+
+- Updated dependencies [31bfcae6a]
+  - @mysten/sui.js@0.29.1
+
+## 0.4.2
+
+### Patch Changes
+
+- 0e202a543: Remove pending delegation switches.
+- Updated dependencies [f1e3a0373]
+- Updated dependencies [f2e713bd0]
+- Updated dependencies [0e202a543]
+- Updated dependencies [67e503c7c]
+- Updated dependencies [4baf554f1]
+- Updated dependencies [aa650aa3b]
+- Updated dependencies [6ff0c785f]
+  - @mysten/sui.js@0.29.0
+
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [a67cc044b]
+- Updated dependencies [24bdb66c6]
+- Updated dependencies [a67cc044b]
+- Updated dependencies [a67cc044b]
+  - @mysten/sui.js@0.28.0
+
 ## 0.4.0
 
 ### Minor Changes

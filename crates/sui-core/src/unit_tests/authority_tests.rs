@@ -17,6 +17,7 @@ use move_binary_format::{
     file_format::{self, AddressIdentifierIndex, IdentifierIndex, ModuleHandle},
     CompiledModule,
 };
+use move_core_types::identifier::IdentStr;
 use move_core_types::{
     account_address::AccountAddress, ident_str, identifier::Identifier, language_storage::TypeTag,
 };
@@ -25,27 +26,33 @@ use rand::{
     prelude::StdRng,
     Rng, SeedableRng,
 };
+use serde_json::json;
 use std::collections::HashSet;
 use std::fs;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use sui_json_rpc_types::{SuiExecutionResult, SuiExecutionStatus, SuiGasCostSummary};
+use sui_types::error::UserInputError;
 use sui_types::utils::{
     make_committee_key, mock_certified_checkpoint, to_sender_signed_transaction,
+    to_sender_signed_transaction_with_multi_signers,
 };
 use sui_types::{SUI_CLOCK_OBJECT_ID, SUI_CLOCK_OBJECT_SHARED_VERSION, SUI_FRAMEWORK_OBJECT_ID};
 
 use crate::epoch::epoch_metrics::EpochMetrics;
+use move_core_types::parser::parse_type_tag;
 use std::{convert::TryInto, env};
 use sui_macros::sim_test;
-use sui_protocol_config::ProtocolConfig;
+use sui_protocol_config::{ProtocolConfig, SupportedProtocolVersions};
 use sui_types::dynamic_field::DynamicFieldType;
+use sui_types::epoch_data::EpochData;
 use sui_types::object::Data;
 use sui_types::{
     base_types::dbg_addr,
     crypto::{get_key_pair, Signature},
     crypto::{AccountKeyPair, AuthorityKeyPair, KeypairTraits},
+    messages::TransactionExpiration,
     messages::VerifiedTransaction,
     object::{Owner, GAS_VALUE_FOR_TESTING, OBJECT_START_VERSION},
     sui_system_state::SuiSystemState,
@@ -197,8 +204,8 @@ pub fn create_genesis_module_packages() -> Vec<Object> {
     let sui_modules = sui_framework::get_sui_framework();
     let std_modules = sui_framework::get_move_stdlib();
     vec![
-        Object::new_package(std_modules, TransactionDigest::genesis()).unwrap(),
-        Object::new_package(sui_modules, TransactionDigest::genesis()).unwrap(),
+        Object::new_package_for_testing(std_modules, TransactionDigest::genesis()).unwrap(),
+        Object::new_package_for_testing(sui_modules, TransactionDigest::genesis()).unwrap(),
     ]
 }
 
@@ -371,6 +378,7 @@ async fn test_dev_inspect_object_by_bytes() {
     assert!(effects.created.is_empty());
     assert_eq!(effects.mutated.len(), 2);
     assert!(effects.deleted.is_empty());
+    assert!(effects.unwrapped_then_deleted.is_empty());
 
     // compare the bytes
     let updated_object = validator
@@ -723,12 +731,10 @@ async fn test_dev_inspect_uses_unbound_object() {
     }));
 
     let result = fullnode
-        .dev_inspect_transaction(sender, kind, 1, fullnode.current_epoch_for_testing())
+        .dev_inspect_transaction(sender, kind, Some(1))
         .await;
     let Err(err) = result else { panic!() };
-    assert!(err
-        .to_string()
-        .contains("Error checking transaction input objects: [ObjectNotFound"));
+    assert!(err.to_string().contains("ObjectNotFound"));
 }
 
 #[tokio::test]
@@ -814,8 +820,10 @@ async fn test_handle_transfer_transaction_bad_signature() {
     let mut bad_signature_transfer_transaction = transfer_transaction.clone().into_inner();
     bad_signature_transfer_transaction
         .data_mut_for_testing()
-        .tx_signature =
-        Signature::new_secure(&transfer_transaction.data().intent_message, &unknown_key).into();
+        .tx_signatures =
+        vec![
+            Signature::new_secure(&transfer_transaction.data().intent_message, &unknown_key).into(),
+        ];
 
     assert!(client
         .handle_transaction(bad_signature_transfer_transaction)
@@ -881,10 +889,8 @@ async fn test_handle_transfer_transaction_with_max_sequence_number() {
         .await;
 
     assert_eq!(
-        res.unwrap_err()
-            .collapse_if_single_transaction_input_error()
-            .unwrap(),
-        &SuiError::InvalidSequenceNumber,
+        UserInputError::try_from(res.unwrap_err()).unwrap(),
+        UserInputError::InvalidSequenceNumber,
     );
 }
 
@@ -895,11 +901,8 @@ async fn test_handle_shared_object_with_max_sequence_number() {
     // Submit the transaction and assemble a certificate.
     let response = authority.handle_transaction(transaction.clone()).await;
     assert_eq!(
-        response
-            .unwrap_err()
-            .collapse_if_single_transaction_input_error()
-            .unwrap(),
-        &SuiError::InvalidSequenceNumber,
+        UserInputError::try_from(response.unwrap_err()).unwrap(),
+        UserInputError::InvalidSequenceNumber,
     );
 }
 
@@ -1073,6 +1076,134 @@ async fn test_handle_transfer_transaction_ok() {
 }
 
 #[tokio::test]
+async fn test_handle_sponsored_transaction() {
+    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
+    let (sponsor, sponsor_key): (_, AccountKeyPair) = get_key_pair();
+    let recipient = dbg_addr(2);
+    let object_id = ObjectID::random();
+    let gas_object_id = ObjectID::random();
+    let authority_state =
+        init_state_with_ids(vec![(sender, object_id), (sponsor, gas_object_id)]).await;
+
+    let object = authority_state
+        .get_object(&object_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let gas_object = authority_state
+        .get_object(&gas_object_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let tx_kind = TransactionKind::Single(SingleTransactionKind::TransferObject(TransferObject {
+        recipient,
+        object_ref: object.compute_object_reference(),
+    }));
+
+    let data = TransactionData::new_with_gas_data(
+        tx_kind.clone(),
+        sender,
+        GasData {
+            payment: gas_object.compute_object_reference(),
+            owner: sponsor,
+            price: DUMMY_GAS_PRICE,
+            budget: 10000,
+        },
+    );
+    let dual_signed_tx =
+        to_sender_signed_transaction_with_multi_signers(data, vec![&sender_key, &sponsor_key]);
+
+    authority_state
+        .handle_transaction(dual_signed_tx.clone())
+        .await
+        .unwrap();
+
+    // Verify wrong gas owner gives error, using sender address
+    let data = TransactionData::new_with_gas_data(
+        tx_kind.clone(),
+        sender,
+        GasData {
+            payment: gas_object.compute_object_reference(),
+            owner: sender, // <-- wrong
+            price: DUMMY_GAS_PRICE,
+            budget: 10000,
+        },
+    );
+    let dual_signed_tx =
+        to_sender_signed_transaction_with_multi_signers(data, vec![&sender_key, &sponsor_key]);
+
+    let error = authority_state
+        .handle_transaction(dual_signed_tx.clone())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            UserInputError::try_from(error.clone()).unwrap(),
+            UserInputError::IncorrectUserSignature { .. }
+        ),
+        "{}",
+        error
+    );
+
+    // Verify wrong gas owner gives error, using another address
+    let data = TransactionData::new_with_gas_data(
+        tx_kind.clone(),
+        sender,
+        GasData {
+            payment: gas_object.compute_object_reference(),
+            owner: dbg_addr(42), // <-- wrong
+            price: DUMMY_GAS_PRICE,
+            budget: 10000,
+        },
+    );
+    let dual_signed_tx =
+        to_sender_signed_transaction_with_multi_signers(data, vec![&sender_key, &sponsor_key]);
+    let error = authority_state
+        .handle_transaction(dual_signed_tx.clone())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            UserInputError::try_from(error.clone()).unwrap(),
+            UserInputError::IncorrectUserSignature { .. }
+        ),
+        "{}",
+        error
+    );
+
+    // Sponsor sig is valid but it doesn't actually own the gas object
+    let (third_party, third_party_key): (_, AccountKeyPair) = get_key_pair();
+    let data = TransactionData::new_with_gas_data(
+        tx_kind,
+        sender,
+        GasData {
+            payment: gas_object.compute_object_reference(),
+            owner: third_party,
+            price: DUMMY_GAS_PRICE,
+            budget: 10000,
+        },
+    );
+    let dual_signed_tx =
+        to_sender_signed_transaction_with_multi_signers(data, vec![&sender_key, &third_party_key]);
+    let error = authority_state
+        .handle_transaction(dual_signed_tx.clone())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(
+            UserInputError::try_from(error.clone()).unwrap(),
+            UserInputError::IncorrectUserSignature { .. }
+        ),
+        "{}",
+        error
+    );
+}
+
+#[tokio::test]
 async fn test_transfer_package() {
     let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
     let recipient = dbg_addr(2);
@@ -1127,11 +1258,8 @@ async fn test_immutable_gas() {
         .handle_transaction(transfer_transaction.clone())
         .await;
     assert!(matches!(
-        *result
-            .unwrap_err()
-            .collapse_if_single_transaction_input_error()
-            .unwrap(),
-        SuiError::GasObjectNotOwnedObject { .. }
+        UserInputError::try_from(result.unwrap_err()).unwrap(),
+        UserInputError::GasObjectNotOwnedObject { .. }
     ));
 }
 
@@ -1159,11 +1287,8 @@ async fn test_objected_owned_gas() {
     let transaction = to_sender_signed_transaction(data, &sender_key);
     let result = authority_state.handle_transaction(transaction).await;
     assert!(matches!(
-        *result
-            .unwrap_err()
-            .collapse_if_single_transaction_input_error()
-            .unwrap(),
-        SuiError::GasObjectNotOwnedObject { .. }
+        UserInputError::try_from(result.unwrap_err()).unwrap(),
+        UserInputError::GasObjectNotOwnedObject { .. }
     ));
 }
 
@@ -1260,7 +1385,7 @@ async fn test_publish_dependent_module_ok() {
     let transaction = to_sender_signed_transaction(data, &sender_key);
 
     let dependent_module_id =
-        TxContext::new(&sender, transaction.digest(), &EpochData::genesis()).fresh_id();
+        TxContext::new(&sender, transaction.digest(), &EpochData::new_test()).fresh_id();
 
     // Object does not exist
     assert!(authority
@@ -1301,7 +1426,7 @@ async fn test_publish_module_no_dependencies_ok() {
     );
     let transaction = to_sender_signed_transaction(data, &sender_key);
     let _module_object_id =
-        TxContext::new(&sender, transaction.digest(), &EpochData::genesis()).fresh_id();
+        TxContext::new(&sender, transaction.digest(), &EpochData::new_test()).fresh_id();
     let signed_effects = send_and_confirm_transaction(&authority, transaction)
         .await
         .unwrap()
@@ -1404,7 +1529,8 @@ async fn test_package_size_limit() {
             error: ExecutionFailureStatus::MovePackageTooBig {
                 object_size: package_size,
                 max_object_size: max_move_package_size
-            }
+            },
+            command: None,
         }
     )
 }
@@ -1605,12 +1731,71 @@ async fn test_handle_transfer_sui_with_amount_insufficient_gas() {
     let result = authority_state.handle_transaction(transaction).await;
 
     assert!(matches!(
-        *result
-            .unwrap_err()
-            .collapse_if_single_transaction_input_error()
-            .unwrap(),
-        SuiError::GasBalanceTooLowToCoverGasBudget { .. }
+        UserInputError::try_from(result.unwrap_err()).unwrap(),
+        UserInputError::GasBalanceTooLowToCoverGasBudget { .. }
     ));
+}
+
+#[tokio::test]
+async fn test_transaction_expiration() {
+    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
+    let recipient = dbg_addr(2);
+    let object_id = ObjectID::random();
+    let authority_state = init_state_with_ids(vec![(sender, object_id)]).await;
+
+    let mut committee = authority_state
+        .epoch_store_for_testing()
+        .committee()
+        .to_owned();
+    committee.epoch = 1;
+    let system_state = SuiSystemState {
+        epoch: 1,
+        ..Default::default()
+    };
+
+    authority_state
+        .reconfigure(
+            &authority_state.epoch_store_for_testing(),
+            SupportedProtocolVersions::SYSTEM_DEFAULT,
+            committee,
+            EpochStartConfiguration {
+                system_state,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let object = authority_state
+        .get_object(&object_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut data = TransactionData::new_transfer_sui_with_dummy_gas_price(
+        recipient,
+        sender,
+        Some(1),
+        object.compute_object_reference(),
+        MAX_GAS,
+    );
+
+    // Expired transaction returns an error
+    let mut expired_data = data.clone();
+    expired_data.expiration = TransactionExpiration::Epoch(0);
+    let expired_transaction = to_sender_signed_transaction(expired_data, &sender_key);
+    let result = authority_state
+        .handle_transaction(expired_transaction)
+        .await;
+
+    assert!(matches!(result.unwrap_err(), SuiError::TransactionExpired));
+
+    // Non expired transaction signed without issue
+    data.expiration = TransactionExpiration::Epoch(10);
+    let transaction = to_sender_signed_transaction(data, &sender_key);
+    authority_state
+        .handle_transaction(transaction)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -1638,13 +1823,10 @@ async fn test_missing_package() {
     );
     let transaction = to_sender_signed_transaction(data, &sender_key);
     let result = authority_state.handle_transaction(transaction).await;
-    let error = result.unwrap_err();
-    let error = error.collapse_if_single_transaction_input_error().unwrap();
-    assert!(
-        matches!(error, SuiError::DependentPackageNotFound { .. }),
-        "Wrong error {}",
-        error
-    );
+    assert!(matches!(
+        UserInputError::try_from(result.unwrap_err()).unwrap(),
+        UserInputError::DependentPackageNotFound { .. }
+    ));
 }
 
 #[tokio::test]
@@ -1710,7 +1892,7 @@ async fn test_type_argument_dependencies() {
         .unwrap()
         .status
         .into_signed_for_testing();
-    // missing package fails obj type tag succeeds
+    // missing package fails
     let data = TransactionData::new_move_call_with_dummy_gas_price(
         s3,
         object_basics,
@@ -1728,13 +1910,11 @@ async fn test_type_argument_dependencies() {
     );
     let transaction = to_sender_signed_transaction(data, &s3_key);
     let result = authority_state.handle_transaction(transaction).await;
-    let error = result.unwrap_err();
-    let error = error.collapse_if_single_transaction_input_error().unwrap();
-    assert!(
-        matches!(error, SuiError::DependentPackageNotFound { .. }),
-        "Wrong error {}",
-        error
-    );
+
+    assert!(matches!(
+        UserInputError::try_from(result.unwrap_err()).unwrap(),
+        UserInputError::DependentPackageNotFound { .. }
+    ));
 }
 
 #[tokio::test]
@@ -1872,7 +2052,9 @@ async fn test_handle_confirmation_transaction_ok() {
             .parent(&(object_id, new_account.version(), new_account.digest()))
             .await
             .unwrap();
-        authority_state.read_certificate(&refx).await.unwrap()
+        authority_state
+            .get_certified_transaction(&refx, &authority_state.epoch_store_for_testing())
+            .unwrap()
     };
     if let Some(certified_transaction) = opt_cert {
         // valid since our test authority should not update its certificate set
@@ -2015,7 +2197,9 @@ async fn test_handle_certificate_with_shared_object_interrupted_retry() {
 
         let epoch_store = authority_state.epoch_store_for_testing();
         let g = epoch_store
-            .acquire_tx_guard(&shared_object_cert)
+            .acquire_tx_guard(&VerifiedExecutableTransaction::new_from_certificate(
+                shared_object_cert.clone(),
+            ))
             .await
             .unwrap();
 
@@ -2028,7 +2212,7 @@ async fn test_handle_certificate_with_shared_object_interrupted_retry() {
         // explicitly doesn't do so.
         authority_state
             .transaction_manager()
-            .enqueue(vec![shared_object_cert.clone()], &epoch_store)
+            .enqueue_certificates(vec![shared_object_cert.clone()], &epoch_store)
             .unwrap();
         authority_state
             .execute_certificate(
@@ -2528,6 +2712,7 @@ async fn test_authority_persist() {
         AuthorityState::new(
             name,
             secrete,
+            SupportedProtocolVersions::SYSTEM_DEFAULT,
             store,
             epoch_store,
             committee_store,
@@ -2537,6 +2722,7 @@ async fn test_authority_persist() {
             &registry,
             &AuthorityStorePruningConfig::default(),
             &[], // no genesis objects
+            10000,
         )
         .await
     }
@@ -2552,15 +2738,9 @@ async fn test_authority_persist() {
 
     // Create an authority
     let store = Arc::new(
-        AuthorityStore::open_with_committee_for_testing(
-            &path,
-            None,
-            &committee,
-            &genesis,
-            &AuthorityStorePruningConfig::default(),
-        )
-        .await
-        .unwrap(),
+        AuthorityStore::open_with_committee_for_testing(&path, None, &committee, &genesis)
+            .await
+            .unwrap(),
     );
     let authority = init_state(committee, authority_key, store).await;
 
@@ -2584,15 +2764,9 @@ async fn test_authority_persist() {
     let (genesis, authority_key) = init_state_parameters_from_rng(&mut StdRng::from_seed(seed));
     let committee = genesis.committee().unwrap();
     let store = Arc::new(
-        AuthorityStore::open_with_committee_for_testing(
-            &path,
-            None,
-            &committee,
-            &genesis,
-            &AuthorityStorePruningConfig::default(),
-        )
-        .await
-        .unwrap(),
+        AuthorityStore::open_with_committee_for_testing(&path, None, &committee, &genesis)
+            .await
+            .unwrap(),
     );
     let authority2 = init_state(committee, authority_key, store).await;
     let obj2 = authority2.get_object(&object_id).await.unwrap().unwrap();
@@ -2657,7 +2831,9 @@ async fn test_refusal_to_sign_consensus_commit_prologue() {
     let tx_data = TransactionData::new_with_dummy_gas_price(
         TransactionKind::Single(SingleTransactionKind::ConsensusCommitPrologue(
             ConsensusCommitPrologue {
-                checkpoint_start_timestamp_ms: 42,
+                epoch: 0,
+                round: 0,
+                commit_timestamp_ms: 42,
             },
         )),
         sender,
@@ -2708,10 +2884,10 @@ async fn test_invalid_mutable_clock_parameter() {
     };
 
     assert_eq!(
-        e,
-        SuiError::TransactionInputObjectsErrors {
-            errors: vec![SuiError::ImmutableParameterExpectedError]
-        },
+        UserInputError::try_from(e).unwrap(),
+        UserInputError::ImmutableParameterExpectedError {
+            object_id: SUI_CLOCK_OBJECT_ID
+        }
     );
 }
 
@@ -2899,7 +3075,7 @@ async fn test_store_revert_transfer_sui() {
         db.get_latest_parent_entry(gas_object_id).unwrap().unwrap(),
         (gas_object_ref, TransactionDigest::genesis()),
     );
-    assert!(db.get_certified_transaction(&tx_digest).unwrap().is_none());
+    assert!(db.get_transaction(&tx_digest).unwrap().is_none());
     assert!(!db.as_ref().is_tx_already_executed(&tx_digest).unwrap());
 }
 
@@ -3056,77 +3232,22 @@ async fn test_store_revert_unwrap_move_call() {
 }
 #[tokio::test]
 async fn test_store_get_dynamic_object() {
-    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
-    let gas_object_id = ObjectID::random();
-    let (authority_state, object_basics) =
-        init_state_with_ids_and_object_basics(vec![(sender, gas_object_id)]).await;
-
-    let create_outer_effects = create_move_object(
-        &object_basics.0,
-        &authority_state,
-        &gas_object_id,
-        &sender,
-        &sender_key,
-    )
-    .await
-    .unwrap();
-
-    assert!(create_outer_effects.status.is_ok());
-    assert_eq!(create_outer_effects.created.len(), 1);
-
-    let create_inner_effects = create_move_object(
-        &object_basics.0,
-        &authority_state,
-        &gas_object_id,
-        &sender,
-        &sender_key,
-    )
-    .await
-    .unwrap();
-
-    assert!(create_inner_effects.status.is_ok());
-    assert_eq!(create_inner_effects.created.len(), 1);
-
-    let outer_v0 = create_outer_effects.created[0].0;
-    let inner_v0 = create_inner_effects.created[0].0;
-
-    let add_txn = to_sender_signed_transaction(
-        TransactionData::new_move_call_with_dummy_gas_price(
-            sender,
-            object_basics.0,
-            ident_str!("object_basics").to_owned(),
-            ident_str!("add_ofield").to_owned(),
-            vec![],
-            create_inner_effects.gas_object.0,
-            vec![
-                CallArg::Object(ObjectArg::ImmOrOwnedObject(outer_v0)),
-                CallArg::Object(ObjectArg::ImmOrOwnedObject(inner_v0)),
-            ],
-            MAX_GAS,
-        ),
-        &sender_key,
-    );
-
-    let add_cert = init_certified_transaction(add_txn, &authority_state);
-
-    let add_effects = authority_state
-        .try_execute_for_test(&add_cert)
-        .await
-        .unwrap()
-        .into_message();
-
-    assert!(add_effects.status.is_ok());
-    assert_eq!(add_effects.created.len(), 1);
-
-    let fields = authority_state
-        .get_dynamic_fields(outer_v0.0, None, usize::MAX)
-        .unwrap();
+    let (_, fields) = create_and_retrieve_df_info(ident_str!("add_ofield")).await;
     assert_eq!(fields.len(), 1);
     assert_eq!(fields[0].type_, DynamicFieldType::DynamicObject);
 }
 
 #[tokio::test]
 async fn test_store_get_dynamic_field() {
+    let (_, fields) = create_and_retrieve_df_info(ident_str!("add_field")).await;
+
+    assert_eq!(fields.len(), 1);
+    assert!(matches!(fields[0].type_, DynamicFieldType::DynamicField));
+    assert_eq!(json!(true), fields[0].name.value);
+    assert_eq!(TypeTag::Bool, fields[0].name.type_)
+}
+
+async fn create_and_retrieve_df_info(function: &IdentStr) -> (SuiAddress, Vec<DynamicFieldInfo>) {
     let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
     let gas_object_id = ObjectID::random();
     let (authority_state, object_basics) =
@@ -3166,7 +3287,7 @@ async fn test_store_get_dynamic_field() {
             sender,
             object_basics.0,
             ident_str!("object_basics").to_owned(),
-            ident_str!("add_field").to_owned(),
+            function.to_owned(),
             vec![],
             create_inner_effects.gas_object.0,
             vec![
@@ -3189,11 +3310,82 @@ async fn test_store_get_dynamic_field() {
     assert!(add_effects.status.is_ok());
     assert_eq!(add_effects.created.len(), 1);
 
-    let fields = authority_state
-        .get_dynamic_fields(outer_v0.0, None, usize::MAX)
-        .unwrap();
+    (
+        sender,
+        authority_state
+            .get_dynamic_fields(outer_v0.0, None, usize::MAX)
+            .unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn test_dynamic_field_struct_name_parsing() {
+    let (_, fields) = create_and_retrieve_df_info(ident_str!("add_field_with_struct_name")).await;
+
     assert_eq!(fields.len(), 1);
     assert!(matches!(fields[0].type_, DynamicFieldType::DynamicField));
+    assert_eq!(json!({"name_str": "Test Name"}), fields[0].name.value);
+    assert_eq!(
+        parse_type_tag("0x0::object_basics::Name").unwrap(),
+        fields[0].name.type_
+    )
+}
+
+#[tokio::test]
+async fn test_dynamic_field_bytearray_name_parsing() {
+    let (_, fields) =
+        create_and_retrieve_df_info(ident_str!("add_field_with_bytearray_name")).await;
+
+    assert_eq!(fields.len(), 1);
+    assert!(matches!(fields[0].type_, DynamicFieldType::DynamicField));
+    assert_eq!(parse_type_tag("vector<u8>").unwrap(), fields[0].name.type_);
+    assert_eq!(json!("Test Name".as_bytes()), fields[0].name.value);
+}
+
+#[tokio::test]
+async fn test_dynamic_field_address_name_parsing() {
+    let (sender, fields) =
+        create_and_retrieve_df_info(ident_str!("add_field_with_address_name")).await;
+
+    assert_eq!(fields.len(), 1);
+    assert!(matches!(fields[0].type_, DynamicFieldType::DynamicField));
+    assert_eq!(parse_type_tag("address").unwrap(), fields[0].name.type_);
+    assert_eq!(json!(sender), fields[0].name.value);
+}
+
+#[tokio::test]
+async fn test_dynamic_object_field_struct_name_parsing() {
+    let (_, fields) = create_and_retrieve_df_info(ident_str!("add_ofield_with_struct_name")).await;
+
+    assert_eq!(fields.len(), 1);
+    assert!(matches!(fields[0].type_, DynamicFieldType::DynamicObject));
+    assert_eq!(json!({"name_str": "Test Name"}), fields[0].name.value);
+    assert_eq!(
+        parse_type_tag("0x0::object_basics::Name").unwrap(),
+        fields[0].name.type_
+    )
+}
+
+#[tokio::test]
+async fn test_dynamic_object_field_bytearray_name_parsing() {
+    let (_, fields) =
+        create_and_retrieve_df_info(ident_str!("add_ofield_with_bytearray_name")).await;
+
+    assert_eq!(fields.len(), 1);
+    assert!(matches!(fields[0].type_, DynamicFieldType::DynamicObject));
+    assert_eq!(parse_type_tag("vector<u8>").unwrap(), fields[0].name.type_);
+    assert_eq!(json!("Test Name".as_bytes()), fields[0].name.value);
+}
+
+#[tokio::test]
+async fn test_dynamic_object_field_address_name_parsing() {
+    let (sender, fields) =
+        create_and_retrieve_df_info(ident_str!("add_ofield_with_address_name")).await;
+
+    assert_eq!(fields.len(), 1);
+    assert!(matches!(fields[0].type_, DynamicFieldType::DynamicObject));
+    assert_eq!(parse_type_tag("address").unwrap(), fields[0].name.type_);
+    assert_eq!(json!(sender), fields[0].name.value);
 }
 
 #[tokio::test]
@@ -3676,7 +3868,7 @@ pub async fn init_state_with_ids_and_object_basics<
         .cloned()
         .collect();
     let digest = TransactionDigest::genesis();
-    let pkg = Object::new_package(modules, digest).unwrap();
+    let pkg = Object::new_package_for_testing(modules, digest).unwrap();
     let pkg_ref = pkg.compute_object_reference();
     state.insert_genesis_object(pkg).await;
     (state, pkg_ref)
@@ -3708,7 +3900,7 @@ pub async fn init_state_with_ids_and_object_basics_with_fullnode<
         .cloned()
         .collect();
     let digest = TransactionDigest::genesis();
-    let pkg = Object::new_package(modules, digest).unwrap();
+    let pkg = Object::new_package_for_testing(modules, digest).unwrap();
     let pkg_ref = pkg.compute_object_reference();
     validator.insert_genesis_object(pkg.clone()).await;
     fullnode.insert_genesis_object(pkg).await;
@@ -4028,7 +4220,7 @@ pub async fn call_dev_inspect(
         arguments,
     }));
     authority
-        .dev_inspect_transaction(*sender, kind, 1, authority.current_epoch_for_testing())
+        .dev_inspect_transaction(*sender, kind, Some(1))
         .await
 }
 
@@ -4087,8 +4279,8 @@ async fn make_test_transaction(
     unreachable!("couldn't form cert")
 }
 
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn test_shared_object_transaction() {
+async fn prepare_authority_and_shared_object_cert(
+) -> (Arc<AuthorityState>, VerifiedCertificate, ObjectID) {
     let (sender, keypair): (_, AccountKeyPair) = get_key_pair();
 
     // Initialize an authority with a (owned) gas object and a shared object.
@@ -4098,7 +4290,6 @@ async fn test_shared_object_transaction() {
 
     let shared_object_id = ObjectID::random();
     let shared_object = {
-        use sui_types::object::MoveObject;
         let obj = MoveObject::new_gas_coin(OBJECT_START_VERSION, shared_object_id, 10);
         let owner = Owner::Shared {
             initial_shared_version: obj.version(),
@@ -4119,15 +4310,23 @@ async fn test_shared_object_transaction() {
         16,
     )
     .await;
-    let transaction_digest = certificate.digest();
+    (authority, certificate, shared_object_id)
+}
 
-    // Executing the certificate now fails since it was not sequenced.
-    let result = authority.try_execute_for_test(&certificate).await;
-    assert!(
-        matches!(result, Err(SuiError::TransactionInputObjectsErrors { .. })),
-        "{:#?}",
-        result
-    );
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+#[should_panic]
+async fn test_shared_object_transaction_shared_locks_not_set() {
+    let (authority, certificate, _) = prepare_authority_and_shared_object_cert().await;
+
+    // Executing the certificate now panics since it was not sequenced and shared locks are not set
+    let _ = authority.try_execute_for_test(&certificate).await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn test_shared_object_transaction_ok() {
+    let (authority, certificate, shared_object_id) =
+        prepare_authority_and_shared_object_cert().await;
+    let transaction_digest = certificate.digest();
 
     // Sequence the certificate to assign a sequence number to the shared object.
     send_consensus(&authority, &certificate).await;
@@ -4247,13 +4446,14 @@ async fn test_consensus_message_processed() {
         } else {
             let epoch_store = authority2.epoch_store_for_testing();
             epoch_store
-                .acquire_shared_locks_from_effects(&certificate, &effects1, authority2.db())
+                .acquire_shared_locks_from_effects(
+                    &VerifiedExecutableTransaction::new_from_certificate(certificate.clone()),
+                    &effects1,
+                    authority2.db(),
+                )
                 .await
                 .unwrap();
-            authority2
-                .try_execute_immediately(&certificate, &epoch_store)
-                .await
-                .unwrap();
+            authority2.try_execute_for_test(&certificate).await.unwrap();
             authority2
                 .database
                 .get_executed_effects(transaction_digest)
@@ -4305,7 +4505,7 @@ async fn test_blocked_move_calls() {
             sender,
             SUI_FRAMEWORK_OBJECT_ID,
             ident_str!("sui_system").to_owned(),
-            ident_str!("request_remove_validator").to_owned(),
+            ident_str!("request_set_commission_rate").to_owned(),
             vec![],
             authority_state
                 .get_object(&gas_object_id)
@@ -4313,22 +4513,22 @@ async fn test_blocked_move_calls() {
                 .unwrap()
                 .unwrap()
                 .compute_object_reference(),
-            vec![CallArg::Object(ObjectArg::SharedObject {
-                id: SUI_SYSTEM_STATE_OBJECT_ID,
-                initial_shared_version: SUI_SYSTEM_STATE_OBJECT_SHARED_VERSION,
-                mutable: true,
-            })],
+            vec![
+                CallArg::Object(ObjectArg::SharedObject {
+                    id: SUI_SYSTEM_STATE_OBJECT_ID,
+                    initial_shared_version: SUI_SYSTEM_STATE_OBJECT_SHARED_VERSION,
+                    mutable: true,
+                }),
+                CallArg::Pure(bcs::to_bytes(&0u64).unwrap()),
+            ],
             MAX_GAS,
         ),
         &sender_key,
     );
     let response = authority_state.handle_transaction(tx).await;
     assert_eq!(
-        *response
-            .unwrap_err()
-            .collapse_if_single_transaction_input_error()
-            .unwrap(),
-        SuiError::BlockedMoveFunction
+        UserInputError::try_from(response.unwrap_err()).unwrap(),
+        UserInputError::BlockedMoveFunction
     );
 }
 

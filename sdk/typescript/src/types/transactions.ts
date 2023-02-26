@@ -16,7 +16,7 @@ import {
   tuple,
 } from 'superstruct';
 import { SuiEvent } from './events';
-import { SuiMovePackage, SuiObject, SuiObjectRef } from './objects';
+import { SuiGasData, SuiMovePackage, SuiObject, SuiObjectRef } from './objects';
 import {
   ObjectId,
   ObjectOwner,
@@ -51,7 +51,9 @@ export const SuiChangeEpoch = object({
 export type SuiChangeEpoch = Infer<typeof SuiChangeEpoch>;
 
 export const SuiConsensusCommitPrologue = object({
-  checkpoint_start_timestamp_ms: number(),
+  epoch: number(),
+  round: number(),
+  commit_timestamp_ms: number(),
 });
 export type SuiConsensusCommitPrologue = Infer<
   typeof SuiConsensusCommitPrologue
@@ -78,12 +80,11 @@ export const PayAllSui = object({
 export type PayAllSui = Infer<typeof PayAllSui>;
 
 export const MoveCall = object({
-  // TODO: Simplify once 0.24.0 lands
-  package: union([string(), SuiObjectRef]),
+  package: string(),
   module: string(),
   function: string(),
   typeArguments: optional(array(string())),
-  arguments: array(SuiJsonValue),
+  arguments: optional(array(SuiJsonValue)),
 });
 export type MoveCall = Infer<typeof MoveCall>;
 
@@ -125,10 +126,7 @@ export type SuiTransactionKind = Infer<typeof SuiTransactionKind>;
 export const SuiTransactionData = object({
   transactions: array(SuiTransactionKind),
   sender: SuiAddress,
-  gasPayment: SuiObjectRef,
-  // TODO: remove optional after 0.21.0 is released
-  gasPrice: optional(number()),
-  gasBudget: number(),
+  gasData: SuiGasData,
 });
 export type SuiTransactionData = Infer<typeof SuiTransactionData>;
 
@@ -148,7 +146,7 @@ export type AuthorityQuorumSignInfo = Infer<typeof AuthorityQuorumSignInfo>;
 export const CertifiedTransaction = object({
   transactionDigest: TransactionDigest,
   data: SuiTransactionData,
-  txSignature: string(),
+  txSignatures: array(string()),
   authSignInfo: AuthorityQuorumSignInfo,
 });
 export type CertifiedTransaction = Infer<typeof CertifiedTransaction>;
@@ -204,6 +202,8 @@ export const TransactionEffects = object({
   unwrapped: optional(array(OwnedObjectRef)),
   /** Object Refs of objects now deleted (the old refs) */
   deleted: optional(array(SuiObjectRef)),
+  /** Object Refs of objects now deleted (the old refs) */
+  unwrapped_then_deleted: optional(array(SuiObjectRef)),
   /** Object refs of objects now wrapped in other objects */
   wrapped: optional(array(SuiObjectRef)),
   /**
@@ -237,13 +237,6 @@ export const DevInspectResults = object({
 });
 export type DevInspectResults = Infer<typeof DevInspectResults>;
 
-export const SuiTransactionAuthSignersResponse = object({
-  signers: array(string()),
-});
-export type SuiTransactionAuthSignersResponse = Infer<
-  typeof SuiTransactionAuthSignersResponse
->;
-
 // TODO: this is likely to go away after https://github.com/MystenLabs/sui/issues/4207
 export const SuiCertifiedTransactionEffects = object({
   transactionEffectsDigest: string(),
@@ -264,24 +257,7 @@ export const SuiFinalizedEffects = object({
 });
 export type SuiFinalizedEffects = Infer<typeof SuiFinalizedEffects>;
 
-export const SuiExecuteTransactionResponse = union([
-  // TODO: remove after devnet 0.25.0(or 0.24.0) is released
-  object({
-    EffectsCert: object({
-      certificate: CertifiedTransaction,
-      effects: SuiCertifiedTransactionEffects,
-      confirmed_local_execution: boolean(),
-    }),
-  }),
-  object({
-    certificate: optional(CertifiedTransaction),
-    effects: SuiFinalizedEffects,
-    confirmed_local_execution: boolean(),
-  }),
-]);
-export type SuiExecuteTransactionResponse = Infer<
-  typeof SuiExecuteTransactionResponse
->;
+// TODO: Remove after devnet 0.28.0
 
 export type GatewayTxSeqNumber = number;
 
@@ -360,13 +336,50 @@ export type SuiParsedTransactionResponse = Infer<
   typeof SuiParsedTransactionResponse
 >;
 
+export const SuiTransaction = object({
+  data: SuiTransactionData,
+  txSignatures: array(string()),
+});
+export type SuiTransaction = Infer<typeof SuiTransaction>;
+
 export const SuiTransactionResponse = object({
-  certificate: CertifiedTransaction,
+  // TODO: Remove optional after devnet 0.28.0
+  transaction: optional(SuiTransaction),
+  // TODO: Remove after devnet 0.28.0
+  certificate: optional(CertifiedTransaction),
   effects: TransactionEffects,
-  timestamp_ms: union([number(), literal(null)]),
-  parsed_data: union([SuiParsedTransactionResponse, literal(null)]),
+  // TODO: Remove after devnet 0.28.0
+  timestamp_ms: optional(union([number(), literal(null)])),
+  // TODO: Remove optional after devnet 0.28.0
+  timestampMs: optional(union([number(), literal(null)])),
+  // TODO: remove optional after 0.27.0 is released
+  checkpoint: optional(union([number(), literal(null)])),
+  // TODO: Remove optional after devnet 0.28.0
+  confirmedLocalExecution: optional(boolean()),
+  // TODO: Remove after devnet 0.28.0
+  parsed_data: optional(union([SuiParsedTransactionResponse, literal(null)])),
 });
 export type SuiTransactionResponse = Infer<typeof SuiTransactionResponse>;
+
+// TODO: Remove after devnet 0.28.0
+export const SuiExecuteTransactionResponse = union([
+  object({
+    EffectsCert: object({
+      certificate: CertifiedTransaction,
+      effects: SuiCertifiedTransactionEffects,
+      confirmed_local_execution: boolean(),
+    }),
+  }),
+  object({
+    certificate: optional(CertifiedTransaction),
+    effects: SuiFinalizedEffects,
+    confirmed_local_execution: boolean(),
+  }),
+  SuiTransactionResponse,
+]);
+export type SuiExecuteTransactionResponse = Infer<
+  typeof SuiExecuteTransactionResponse
+>;
 
 /* -------------------------------------------------------------------------- */
 /*                              Helper functions                              */
@@ -398,14 +411,21 @@ export function getTransactionDigest(
   return effects.transactionDigest;
 }
 
-export function getTransactionSignature(tx: CertifiedTransaction): string {
-  return tx.txSignature;
-}
+export function getTransactionSignature(
+  tx: SuiTransactionResponse | CertifiedTransaction,
+): string[] {
+  const certificateOrTx =
+    'certificate' in tx
+      ? tx.certificate!
+      : 'transaction' in tx
+      ? tx.transaction!
+      : tx;
 
-export function getTransactionAuthorityQuorumSignInfo(
-  tx: CertifiedTransaction,
-): AuthorityQuorumSignInfo {
-  return tx.authSignInfo;
+  if ('txSignatures' in certificateOrTx) {
+    return certificateOrTx.txSignatures;
+  }
+
+  return [];
 }
 
 export function getTransactionData(
@@ -416,22 +436,42 @@ export function getTransactionData(
 
 /* ----------------------------- TransactionData ---------------------------- */
 
-export function getTransactionSender(tx: CertifiedTransaction): SuiAddress {
-  return tx.data.sender;
+export function getTransactionSender(tx: SuiTransactionResponse): SuiAddress {
+  return tx.certificate
+    ? tx.certificate.data.sender
+    : tx.transaction!.data.sender;
+}
+
+export function getGasData(
+  tx: CertifiedTransaction | SuiTransactionResponse,
+): SuiGasData {
+  if ('data' in tx) {
+    return tx.data.gasData;
+  }
+
+  if ('certificate' in tx) {
+    return tx.certificate!.data.gasData;
+  }
+
+  return tx.transaction!.data.gasData;
 }
 
 export function getTransactionGasObject(
-  tx: CertifiedTransaction,
+  tx: SuiTransactionResponse | CertifiedTransaction,
 ): SuiObjectRef {
-  return tx.data.gasPayment;
+  return getGasData(tx).payment;
 }
 
-export function getTransactionGasPrice(tx: CertifiedTransaction) {
-  return tx.data.gasPrice;
+export function getTransactionGasPrice(
+  tx: SuiTransactionResponse | CertifiedTransaction,
+) {
+  return getGasData(tx).price;
 }
 
-export function getTransactionGasBudget(tx: CertifiedTransaction): number {
-  return tx.data.gasBudget;
+export function getTransactionGasBudget(
+  tx: SuiTransactionResponse | CertifiedTransaction,
+): number {
+  return getGasData(tx).budget;
 }
 
 export function getTransferObjectTransaction(
@@ -489,9 +529,11 @@ export function getConsensusCommitPrologueTransaction(
 }
 
 export function getTransactions(
-  data: CertifiedTransaction,
+  data: SuiTransactionResponse,
 ): SuiTransactionKind[] {
-  return data.data.transactions;
+  return data.certificate
+    ? data.certificate.data.transactions
+    : data.transaction!.data.transactions;
 }
 
 export function getTransferSuiAmount(data: SuiTransactionKind): bigint | null {
@@ -592,7 +634,9 @@ export function getCreatedObjects(
 export function getTimestampFromTransactionResponse(
   data: SuiExecuteTransactionResponse | SuiTransactionResponse,
 ): number | undefined {
-  return 'timestamp_ms' in data ? data.timestamp_ms ?? undefined : undefined;
+  return 'timestamp_ms' in data || 'timestampMs' in data
+    ? (data.timestamp_ms || data.timestampMs) ?? undefined
+    : undefined;
 }
 
 export function getParsedSplitCoinResponse(

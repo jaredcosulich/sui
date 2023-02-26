@@ -5,6 +5,8 @@ use crate::base_types::{AuthorityName, ObjectID, SuiAddress};
 use crate::collection_types::{VecMap, VecSet};
 use crate::committee::{Committee, CommitteeWithNetAddresses, ProtocolVersion, StakeUnit};
 use crate::crypto::{AuthorityPublicKeyBytes, NetworkPublicKey};
+use crate::error::SuiError;
+use crate::storage::ObjectStore;
 use crate::{
     balance::{Balance, Supply},
     id::UID,
@@ -139,6 +141,15 @@ pub struct Table {
     pub size: u64,
 }
 
+impl Default for Table {
+    fn default() -> Self {
+        Table {
+            id: ObjectID::from(SuiAddress::ZERO),
+            size: 0,
+        }
+    }
+}
+
 /// Rust version of the Move sui::linked_table::LinkedTable type. Putting it here since
 /// we only use it in sui_system in the framework.
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, JsonSchema)]
@@ -163,7 +174,7 @@ impl<K> Default for LinkedTable<K> {
 /// Rust version of the Move sui::staking_pool::StakingPool type
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, JsonSchema)]
 pub struct StakingPool {
-    pub validator_address: SuiAddress,
+    pub id: ObjectID,
     pub starting_epoch: u64,
     pub sui_balance: u64,
     pub rewards_pool: Balance,
@@ -188,7 +199,7 @@ pub struct ValidatorSet {
     pub pending_validators: Vec<Validator>,
     pub pending_removals: Vec<u64>,
     pub next_epoch_validators: Vec<ValidatorMetadata>,
-    pub pending_delegation_switches: VecMap<ValidatorPair, TableVec>,
+    pub staking_pool_mappings: Table,
 }
 
 /// Rust version of the Move sui::sui_system::SuiSystemState type
@@ -326,12 +337,12 @@ impl Default for SuiSystemState {
             pending_validators: vec![],
             pending_removals: vec![],
             next_epoch_validators: vec![],
-            pending_delegation_switches: VecMap { contents: vec![] },
+            staking_pool_mappings: Table::default(),
         };
         SuiSystemState {
             info: UID::new(SUI_SYSTEM_STATE_OBJECT_ID),
             epoch: 0,
-            protocol_version: ProtocolVersion::MIN.0,
+            protocol_version: ProtocolVersion::MIN.as_u64(),
             validators: validator_set,
             treasury_cap: Supply { value: 0 },
             storage_fund: Balance::new(0),
@@ -350,4 +361,20 @@ impl Default for SuiSystemState {
             epoch_start_timestamp_ms: 0,
         }
     }
+}
+
+pub fn get_sui_system_state<S>(object_store: S) -> Result<SuiSystemState, SuiError>
+where
+    S: ObjectStore,
+{
+    let sui_system_object = object_store
+        .get_object(&SUI_SYSTEM_STATE_OBJECT_ID)?
+        .ok_or(SuiError::SuiSystemStateNotFound)?;
+    let move_object = sui_system_object
+        .data
+        .try_as_move()
+        .ok_or(SuiError::SuiSystemStateNotFound)?;
+    let result = bcs::from_bytes::<SuiSystemState>(move_object.contents())
+        .expect("Sui System State object deserialization cannot fail");
+    Ok(result)
 }

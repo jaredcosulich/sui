@@ -2,18 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import {
-  ExecuteTransactionRequestType,
-  SignableTransaction,
-  SuiAddress,
-  SuiTransactionResponse,
-} from "@mysten/sui.js";
-import {
   WalletAdapterList,
   resolveAdapters,
   WalletAdapter,
   isWalletProvider,
 } from "@mysten/wallet-adapter-base";
 import { localStorageAdapter, StorageAdapter } from "./storage";
+import {
+  SuiSignTransactionInput,
+  WalletAccount,
+} from "@mysten/wallet-standard";
 
 export * from "./storage";
 
@@ -35,8 +33,8 @@ export enum WalletKitCoreConnectionStatus {
 export interface InternalWalletKitCoreState {
   wallets: WalletAdapter[];
   currentWallet: WalletAdapter | null;
-  accounts: SuiAddress[];
-  currentAccount: SuiAddress | null;
+  accounts: readonly WalletAccount[];
+  currentAccount: WalletAccount | null;
   status: WalletKitCoreConnectionStatus;
 }
 
@@ -46,16 +44,30 @@ export interface WalletKitCoreState extends InternalWalletKitCoreState {
   isError: boolean;
 }
 
+type OptionalProperties<T extends Record<any, any>, U extends keyof T> = Omit<
+  T,
+  U
+> &
+  Partial<Pick<T, U>>;
+
 export interface WalletKitCore {
   autoconnect(): Promise<void>;
   getState(): WalletKitCoreState;
   subscribe(handler: SubscribeHandler): Unsubscribe;
   connect(walletName: string): Promise<void>;
   disconnect(): Promise<void>;
-  signAndExecuteTransaction(
-    transaction: SignableTransaction,
-    options?: { requestType?: ExecuteTransactionRequestType }
-  ): Promise<SuiTransactionResponse>;
+  signTransaction: (
+    transactionInput: OptionalProperties<
+      SuiSignTransactionInput,
+      "chain" | "account"
+    >
+  ) => ReturnType<WalletAdapter["signTransaction"]>;
+  signAndExecuteTransaction: (
+    transactionInput: OptionalProperties<
+      SuiSignTransactionInput,
+      "chain" | "account"
+    >
+  ) => ReturnType<WalletAdapter["signAndExecuteTransaction"]>;
 }
 
 export type SubscribeHandler = (state: WalletKitCoreState) => void;
@@ -186,12 +198,27 @@ export function createWalletKitCore({
         if (walletEventUnsubscribe) {
           walletEventUnsubscribe();
         }
-        walletEventUnsubscribe = currentWallet.on("change", ({ connected }) => {
-          // when undefined connected hasn't changed
-          if (connected === false) {
-            disconnected();
+        walletEventUnsubscribe = currentWallet.on(
+          "change",
+          ({ connected, accounts }) => {
+            // when undefined connected hasn't changed
+            if (connected === false) {
+              disconnected();
+            } else if (accounts) {
+              setState({
+                accounts,
+                currentAccount:
+                  internalState.currentAccount &&
+                  !accounts.find(
+                    ({ address }) =>
+                      address === internalState.currentAccount?.address
+                  )
+                    ? accounts[0]
+                    : internalState.currentAccount,
+              });
+            }
           }
-        });
+        );
         try {
           setState({ status: WalletKitCoreConnectionStatus.CONNECTING });
           await currentWallet.connect();
@@ -226,17 +253,44 @@ export function createWalletKitCore({
       disconnected();
     },
 
-    signAndExecuteTransaction(transaction, options) {
-      if (!internalState.currentWallet) {
+    async signTransaction(transactionInput) {
+      if (!internalState.currentWallet || !internalState.currentAccount) {
         throw new Error(
           "No wallet is currently connected, cannot call `signAndExecuteTransaction`."
         );
       }
+      const {
+        account = internalState.currentAccount,
+        chain = internalState.currentAccount.chains[0],
+      } = transactionInput;
+      if (!chain) {
+        throw new Error("Missing chain");
+      }
+      return internalState.currentWallet.signTransaction({
+        ...transactionInput,
+        account,
+        chain,
+      });
+    },
 
-      return internalState.currentWallet.signAndExecuteTransaction(
-        transaction,
-        options
-      );
+    async signAndExecuteTransaction(transactionInput) {
+      if (!internalState.currentWallet || !internalState.currentAccount) {
+        throw new Error(
+          "No wallet is currently connected, cannot call `signAndExecuteTransaction`."
+        );
+      }
+      const {
+        account = internalState.currentAccount,
+        chain = internalState.currentAccount.chains[0],
+      } = transactionInput;
+      if (!chain) {
+        throw new Error("Missing chain");
+      }
+      return internalState.currentWallet.signAndExecuteTransaction({
+        ...transactionInput,
+        account,
+        chain,
+      });
     },
   };
 
