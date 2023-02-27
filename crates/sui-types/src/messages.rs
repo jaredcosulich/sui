@@ -18,8 +18,8 @@ use crate::object::{MoveObject, Object, ObjectFormatOptions, Owner};
 use crate::signature::{AuthenticatorTrait, GenericSignature};
 use crate::storage::{DeleteKind, WriteKind};
 use crate::{
-    SUI_CLOCK_OBJECT_ID, SUI_CLOCK_OBJECT_SHARED_VERSION, SUI_FRAMEWORK_OBJECT_ID,
-    SUI_SYSTEM_STATE_OBJECT_ID, SUI_SYSTEM_STATE_OBJECT_SHARED_VERSION,
+    SUI_CLOCK_OBJECT_ID, SUI_CLOCK_OBJECT_SHARED_VERSION, SUI_SYSTEM_STATE_OBJECT_ID,
+    SUI_SYSTEM_STATE_OBJECT_SHARED_VERSION,
 };
 use byteorder::{BigEndian, ReadBytesExt};
 use fastcrypto::encoding::Base64;
@@ -51,11 +51,7 @@ use tracing::debug;
 
 pub const DUMMY_GAS_PRICE: u64 = 1;
 
-const BLOCKED_MOVE_FUNCTIONS: [(ObjectID, &str, &str); 1] = [(
-    SUI_FRAMEWORK_OBJECT_ID,
-    "sui_system",
-    "request_set_commission_rate",
-)];
+const BLOCKED_MOVE_FUNCTIONS: [(ObjectID, &str, &str); 0] = [];
 
 #[cfg(test)]
 #[path = "unit_tests/messages_tests.rs"]
@@ -1996,7 +1992,9 @@ pub enum ExecutionFailureStatus {
     VMInvariantViolation,
 
     /// The total amount of coins to be paid is larger than the maximum value of u64.
-    TotalAmountOverflow,
+    TotalPaymentAmountOverflow,
+    /// The total balance of coins is larger than the maximum value of u64.
+    TotalCoinBalanceOverflow,
     // NOTE: if you want to add a new enum,
     // please add it at the end for Rust SDK backward compatibility.
 }
@@ -2093,12 +2091,6 @@ impl Display for ExecutionFailureStatus {
                 write!(
                     f,
                     "Coin exceeds maximum value for a single coin"
-                )
-            },
-            ExecutionFailureStatus::TotalAmountOverflow => {
-                write!(
-                    f,
-                    "The total amount of coins to be paid is larger than the maximum value of u64"
                 )
             },
             ExecutionFailureStatus::EmptyInputCoins => {
@@ -2238,7 +2230,19 @@ impl Display for ExecutionFailureStatus {
             ),
             ExecutionFailureStatus::VMInvariantViolation => {
                 write!(f, "MOVE VM INVARIANT VIOLATION.")
-            }
+            },
+            ExecutionFailureStatus::TotalPaymentAmountOverflow => {
+                write!(
+                    f,
+                    "The total amount of coins to be paid overflows of u64"
+                )
+            },
+            ExecutionFailureStatus::TotalCoinBalanceOverflow => {
+                write!(
+                    f,
+                    "The total balance of coins overflows u64"
+                )
+            },
         }
     }
 }
