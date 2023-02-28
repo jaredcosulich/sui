@@ -28,6 +28,7 @@ use sui_types::crypto::{
 use sui_types::epoch_data::EpochData;
 use sui_types::gas::SuiGasStatus;
 use sui_types::in_memory_storage::InMemoryStorage;
+use sui_types::intent::{Intent, IntentMessage, IntentScope};
 use sui_types::message_envelope::Message;
 use sui_types::messages::{CallArg, TransactionEffects};
 use sui_types::messages::{CertifiedTransaction, Transaction};
@@ -36,7 +37,9 @@ use sui_types::messages_checkpoint::{
     CertifiedCheckpointSummary, CheckpointContents, CheckpointSummary, VerifiedCheckpoint,
 };
 use sui_types::object::Owner;
-use sui_types::sui_system_state::{get_sui_system_state, SuiSystemState};
+use sui_types::sui_system_state::{
+    get_sui_system_state, get_sui_system_state_wrapper, SuiSystemState, SuiSystemStateWrapper,
+};
 use sui_types::temporary_store::{InnerTemporaryStore, TemporaryStore};
 use sui_types::MOVE_STDLIB_ADDRESS;
 use sui_types::SUI_FRAMEWORK_ADDRESS;
@@ -129,6 +132,11 @@ impl Genesis {
             .sui_system_object()
             .get_current_epoch_committee()
             .committee)
+    }
+
+    pub fn sui_system_wrapper_object(&self) -> SuiSystemStateWrapper {
+        get_sui_system_state_wrapper(self.objects())
+            .expect("Sui System State Wrapper object must always exist")
     }
 
     pub fn sui_system_object(&self) -> SuiSystemState {
@@ -377,7 +385,11 @@ impl Builder {
             "provided keypair does not correspond to a validator in the validator set"
         );
         let checkpoint_signature = {
-            let signature = AuthoritySignature::new(&checkpoint, checkpoint.epoch, keypair);
+            let intent_msg = IntentMessage::new(
+                Intent::default().with_scope(IntentScope::CheckpointSummary),
+                checkpoint.clone(),
+            );
+            let signature = AuthoritySignature::new_secure(&intent_msg, &checkpoint.epoch, keypair);
             AuthoritySignInfo {
                 epoch: checkpoint.epoch,
                 authority: name,
