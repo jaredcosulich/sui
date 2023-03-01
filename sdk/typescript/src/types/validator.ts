@@ -32,10 +32,6 @@ export const ValidatorMetaData = object({
   net_address: array(number()),
   consensus_address: array(number()),
   worker_address: array(number()),
-  next_epoch_stake: number(),
-  next_epoch_delegation: number(),
-  next_epoch_gas_price: number(),
-  next_epoch_commission_rate: number(),
 });
 
 export type DelegatedStake = Infer<typeof DelegatedStake>;
@@ -125,10 +121,14 @@ export const PendingWithdawFields = object({
 });
 
 export const DelegationStakingPoolFields = object({
+  exchange_rates: object({
+    id: string(),
+    size: number(),
+  }),
   id: string(),
-  delegation_token_supply: SuiSupplyFields,
-  pending_delegations: ContentsFields,
+  pending_delegation: number(),
   pending_withdraws: PendingWithdawFields,
+  pool_token_balance: number(),
   rewards_pool: object({ value: number() }),
   starting_epoch: number(),
   sui_balance: number(),
@@ -162,6 +162,10 @@ export const Validator = object({
   gas_price: number(),
   delegation_staking_pool: DelegationStakingPoolFields,
   commission_rate: number(),
+  next_epoch_stake: number(),
+  next_epoch_delegation: number(),
+  next_epoch_gas_price: number(),
+  next_epoch_commission_rate: number(),
 });
 export type Validator = Infer<typeof Validator>;
 
@@ -174,9 +178,13 @@ export const ValidatorSet = object({
   validator_stake: number(),
   delegation_stake: number(),
   active_validators: array(Validator),
-  pending_validators: array(Validator),
+  pending_validators: object({
+    contents: object({
+      id: string(),
+      size: number(),
+    }),
+  }),
   pending_removals: array(number()),
-  next_epoch_validators: array(ValidatorMetaData),
   // TODO: Remove this after 0.28.0 is released
   pending_delegation_switches: optional(
     object({ contents: array(ValidatorPair) }),
