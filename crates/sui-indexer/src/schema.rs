@@ -4,8 +4,8 @@
 
 pub mod sql_types {
     #[derive(diesel::sql_types::SqlType)]
-    #[diesel(postgres_type(name = "owner_change_type"))]
-    pub struct OwnerChangeType;
+    #[diesel(postgres_type(name = "object_status"))]
+    pub struct ObjectStatus;
 
     #[derive(diesel::sql_types::SqlType)]
     #[diesel(postgres_type(name = "owner_type"))]
@@ -64,99 +64,91 @@ diesel::table! {
 }
 
 diesel::table! {
-    move_event_logs (id) {
-        id -> Int4,
-        next_cursor_tx_dig -> Nullable<Text>,
-        next_cursor_event_seq -> Nullable<Int8>,
-    }
-}
-
-diesel::table! {
-    move_events (id) {
+    move_calls (id) {
         id -> Int8,
-        transaction_digest -> Nullable<Varchar>,
-        event_sequence -> Int8,
-        event_time -> Nullable<Timestamp>,
-        event_type -> Varchar,
-        event_content -> Varchar,
-    }
-}
-
-diesel::table! {
-    object_event_logs (id) {
-        id -> Int4,
-        next_cursor_tx_dig -> Nullable<Text>,
-        next_cursor_event_seq -> Nullable<Int8>,
-    }
-}
-
-diesel::table! {
-    object_events (id) {
-        id -> Int8,
-        transaction_digest -> Nullable<Varchar>,
-        event_sequence -> Int8,
-        event_time -> Nullable<Timestamp>,
-        event_type -> Varchar,
-        event_content -> Varchar,
-    }
-}
-
-diesel::table! {
-    object_logs (last_processed_id) {
-        last_processed_id -> Int8,
+        transaction_digest -> Varchar,
+        checkpoint_sequence_number -> Int8,
+        epoch -> Int8,
+        sender -> Text,
+        move_package -> Text,
+        move_module -> Text,
+        move_function -> Text,
     }
 }
 
 diesel::table! {
     use diesel::sql_types::*;
     use super::sql_types::OwnerType;
+    use super::sql_types::ObjectStatus;
 
-    objects (id) {
-        id -> Int8,
+    objects (object_id) {
+        epoch -> Int8,
+        checkpoint -> Int8,
         object_id -> Varchar,
         version -> Int8,
+        object_digest -> Varchar,
         owner_type -> OwnerType,
         owner_address -> Nullable<Varchar>,
         initial_shared_version -> Nullable<Int8>,
-        package_id -> Text,
-        transaction_module -> Text,
-        object_type -> Nullable<Text>,
-        object_status -> Varchar,
+        previous_transaction -> Varchar,
+        object_type -> Varchar,
+        object_status -> ObjectStatus,
     }
 }
 
 diesel::table! {
     use diesel::sql_types::*;
-    use super::sql_types::OwnerChangeType;
     use super::sql_types::OwnerType;
+    use super::sql_types::ObjectStatus;
 
-    owner_changes (epoch, object_id, version) {
-        object_id -> Varchar,
-        version -> Int8,
+    objects_history (epoch, object_id, version) {
         epoch -> Int8,
         checkpoint -> Int8,
-        change_type -> OwnerChangeType,
-        owner_type -> OwnerType,
-        owner -> Nullable<Varchar>,
-        initial_shared_version -> Nullable<Int8>,
+        object_id -> Varchar,
+        version -> Int8,
         object_digest -> Varchar,
-        object_type -> Nullable<Varchar>,
+        owner_type -> OwnerType,
+        owner_address -> Nullable<Varchar>,
+        initial_shared_version -> Nullable<Int8>,
+        previous_transaction -> Varchar,
+        object_type -> Varchar,
+        object_status -> ObjectStatus,
     }
 }
 
 diesel::table! {
     use diesel::sql_types::*;
     use super::sql_types::OwnerType;
+    use super::sql_types::ObjectStatus;
 
-    owner_index (object_id) {
+    owner (object_id) {
+        epoch -> Int8,
+        checkpoint -> Int8,
         object_id -> Varchar,
         version -> Int8,
-        epoch -> Int8,
-        owner_type -> OwnerType,
-        owner -> Nullable<Varchar>,
-        initial_shared_version -> Nullable<Int8>,
         object_digest -> Varchar,
-        object_type -> Nullable<Varchar>,
+        owner_type -> OwnerType,
+        owner_address -> Nullable<Varchar>,
+        object_status -> ObjectStatus,
+    }
+}
+
+diesel::table! {
+    use diesel::sql_types::*;
+    use super::sql_types::OwnerType;
+    use super::sql_types::ObjectStatus;
+
+    owner_history (epoch, object_id, version) {
+        epoch -> Int8,
+        checkpoint -> Int8,
+        object_id -> Varchar,
+        version -> Int8,
+        object_digest -> Varchar,
+        owner_type -> Nullable<OwnerType>,
+        owner_address -> Nullable<Varchar>,
+        old_owner_type -> Nullable<OwnerType>,
+        old_owner_address -> Nullable<Varchar>,
+        object_status -> ObjectStatus,
     }
 }
 
@@ -177,21 +169,12 @@ diesel::table! {
 }
 
 diesel::table! {
-    publish_event_logs (id) {
-        id -> Int4,
-        next_cursor_tx_dig -> Nullable<Text>,
-        next_cursor_event_seq -> Nullable<Int8>,
-    }
-}
-
-diesel::table! {
-    publish_events (id) {
+    recipients (id) {
         id -> Int8,
-        transaction_digest -> Nullable<Varchar>,
-        event_sequence -> Int8,
-        event_time -> Nullable<Timestamp>,
-        event_type -> Varchar,
-        event_content -> Varchar,
+        transaction_digest -> Varchar,
+        checkpoint_sequence_number -> Int8,
+        epoch -> Int8,
+        recipient -> Varchar,
     }
 }
 
@@ -230,17 +213,13 @@ diesel::allow_tables_to_appear_in_same_query!(
     checkpoints,
     error_logs,
     events,
-    move_event_logs,
-    move_events,
-    object_event_logs,
-    object_events,
-    object_logs,
+    move_calls,
     objects,
-    owner_changes,
-    owner_index,
+    objects_history,
+    owner,
+    owner_history,
     package_logs,
     packages,
-    publish_event_logs,
-    publish_events,
+    recipients,
     transactions,
 );

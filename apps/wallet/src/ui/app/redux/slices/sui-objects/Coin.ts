@@ -3,19 +3,20 @@
 
 import {
     Coin as CoinAPI,
-    getEvents,
-    getTransactionEffects,
     SUI_SYSTEM_STATE_OBJECT_ID,
+    getObjectType,
+    Transaction,
 } from '@mysten/sui.js';
 import * as Sentry from '@sentry/react';
 
 import type {
     ObjectId,
-    SuiObject,
+    SuiObjectData,
     SuiAddress,
     SuiMoveObject,
-    SuiExecuteTransactionResponse,
+    SuiTransactionResponse,
     SignerWithProvider,
+    CoinStruct,
 } from '@mysten/sui.js';
 
 const COIN_TYPE = '0x2::coin::Coin';
@@ -26,14 +27,12 @@ export const DEFAULT_GAS_BUDGET_FOR_STAKE = 15000;
 export const GAS_TYPE_ARG = '0x2::sui::SUI';
 export const GAS_SYMBOL = 'SUI';
 export const DEFAULT_NFT_TRANSFER_GAS_FEE = 450;
+export const DEFAULT_MINT_NFT_GAS_BUDGET = 2000;
 
 // TODO use sdk
 export class Coin {
-    public static isCoin(obj: SuiObject) {
-        return (
-            obj.data.dataType === 'moveObject' &&
-            obj.data.type.startsWith(COIN_TYPE)
-        );
+    public static isCoin(obj: SuiObjectData) {
+        return getObjectType(obj)?.startsWith(COIN_TYPE) ?? false;
     }
 
     public static getCoinTypeArg(obj: SuiMoveObject) {
@@ -63,7 +62,7 @@ export class Coin {
     }
 
     public static computeGasBudgetForPay(
-        coins: SuiMoveObject[],
+        coins: CoinStruct[],
         amountToSend: bigint
     ): number {
         // TODO: improve the gas budget estimation
@@ -89,19 +88,10 @@ export class Coin {
      */
     public static async stakeCoin(
         signer: SignerWithProvider,
-        coins: SuiMoveObject[],
         amount: bigint,
-        validator: SuiAddress,
-        gasPrice: number
-    ): Promise<SuiExecuteTransactionResponse> {
+        validator: SuiAddress
+    ): Promise<SuiTransactionResponse> {
         const transaction = Sentry.startTransaction({ name: 'stake' });
-        const stakeCoin = await this.coinManageForStake(
-            signer,
-            coins,
-            amount,
-            BigInt(gasPrice * DEFAULT_GAS_BUDGET_FOR_STAKE),
-            transaction
-        );
 
         const span = transaction.startChild({
             op: 'request-add-delegation',
@@ -109,19 +99,23 @@ export class Coin {
         });
 
         try {
-            return await signer.executeMoveCall({
-                packageObjectId: '0x2',
-                module: 'sui_system',
-                function: 'request_add_delegation_mul_coin',
-                typeArguments: [],
-                arguments: [
-                    SUI_SYSTEM_STATE_OBJECT_ID,
-                    [stakeCoin],
-                    [String(amount)],
-                    validator,
-                ],
-                gasBudget: DEFAULT_GAS_BUDGET_FOR_STAKE,
-            });
+            const tx = new Transaction();
+            tx.setGasBudget(DEFAULT_GAS_BUDGET_FOR_STAKE);
+            const stakeCoin = tx.add(
+                Transaction.Commands.SplitCoin(tx.gas, tx.input(amount))
+            );
+            tx.add(
+                Transaction.Commands.MoveCall({
+                    target: '0x2::sui_system::request_add_delegation',
+                    typeArguments: [],
+                    arguments: [
+                        tx.input(SUI_SYSTEM_STATE_OBJECT_ID),
+                        stakeCoin,
+                        tx.input(validator),
+                    ],
+                })
+            );
+            return await signer.signAndExecuteTransaction(tx);
         } finally {
             span.finish();
             transaction.finish();
@@ -132,83 +126,25 @@ export class Coin {
         signer: SignerWithProvider,
         delegation: ObjectId,
         stakedSuiId: ObjectId
-    ): Promise<SuiExecuteTransactionResponse> {
+    ): Promise<SuiTransactionResponse> {
         const transaction = Sentry.startTransaction({ name: 'unstake' });
         try {
-            return await signer.executeMoveCall({
-                packageObjectId: '0x2',
-                module: 'sui_system',
-                function: 'request_withdraw_delegation',
-                typeArguments: [],
-                arguments: [
-                    SUI_SYSTEM_STATE_OBJECT_ID,
-                    delegation,
-                    stakedSuiId,
-                ],
-                gasBudget: DEFAULT_GAS_BUDGET_FOR_STAKE,
-            });
+            const tx = new Transaction();
+            tx.setGasBudget(DEFAULT_GAS_BUDGET_FOR_STAKE);
+            tx.add(
+                Transaction.Commands.MoveCall({
+                    target: '0x2::sui_system::request_withdraw_delegation',
+                    typeArguments: [],
+                    arguments: [
+                        tx.input(SUI_SYSTEM_STATE_OBJECT_ID),
+                        tx.input(delegation),
+                        tx.input(stakedSuiId),
+                    ],
+                })
+            );
+            return await signer.signAndExecuteTransaction(tx);
         } finally {
             transaction.finish();
-        }
-    }
-
-    private static async coinManageForStake(
-        signer: SignerWithProvider,
-        coins: SuiMoveObject[],
-        amount: bigint,
-        gasFee: bigint,
-        transaction: ReturnType<typeof Sentry['startTransaction']>
-    ) {
-        const span = transaction.startChild({
-            op: 'coin-manage',
-            description: 'Coin management for staking',
-        });
-
-        try {
-            const totalAmount = amount + gasFee;
-            const gasBudget = Coin.computeGasBudgetForPay(coins, totalAmount);
-            const inputCoins =
-                CoinAPI.selectCoinSetWithCombinedBalanceGreaterThanOrEqual(
-                    coins,
-                    totalAmount + BigInt(gasBudget)
-                );
-
-            const address = await signer.getAddress();
-
-            const result = await signer.paySui({
-                // NOTE: We reverse the order here so that the highest coin is in the front
-                // so that it is used as the gas coin.
-                inputCoins: [...inputCoins]
-                    .reverse()
-                    .map((coin) => Coin.getID(coin as SuiMoveObject)),
-                recipients: [address, address],
-                // TODO: Update SDK to accept bigint
-                amounts: [Number(amount), Number(gasFee)],
-                gasBudget,
-            });
-
-            const effects = getTransactionEffects(result);
-            const events = getEvents(result);
-
-            if (!effects || !events) {
-                throw new Error('Missing effects or events');
-            }
-
-            const changeEvent = events.find((event) => {
-                if ('coinBalanceChange' in event) {
-                    return event.coinBalanceChange.amount === Number(amount);
-                }
-
-                return false;
-            });
-
-            if (!changeEvent || !('coinBalanceChange' in changeEvent)) {
-                throw new Error('Missing coin balance event');
-            }
-
-            return changeEvent.coinBalanceChange.coinObjectId;
-        } finally {
-            span.finish();
         }
     }
 }

@@ -1,6 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::str::FromStr;
 use std::{fmt::Write, fs::read_dir, path::PathBuf, str, thread, time::Duration};
 
 use anyhow::anyhow;
@@ -21,11 +22,11 @@ use sui_config::{
 };
 use sui_json::SuiJsonValue;
 use sui_json_rpc_types::{
-    GetObjectDataResponse, SuiData, SuiObject, SuiParsedData, SuiParsedObject,
+    SuiObjectData, SuiObjectDataOptions, SuiObjectResponse, SuiTransactionEffectsAPI,
 };
 use sui_keys::keystore::AccountKeystore;
 use sui_macros::sim_test;
-use sui_types::base_types::SuiAddress;
+use sui_types::base_types::{ObjectType, SuiAddress};
 use sui_types::crypto::{
     Ed25519SuiSignature, Secp256k1SuiSignature, SignatureScheme, SuiKeyPair, SuiSignatureInner,
 };
@@ -200,11 +201,14 @@ async fn test_create_example_nft_command() {
     .unwrap();
 
     match result {
-        SuiClientCommandResult::CreateExampleNFT(GetObjectDataResponse::Exists(obj)) => {
-            assert_eq!(obj.owner, address);
+        SuiClientCommandResult::CreateExampleNFT(SuiObjectResponse::Exists(obj)) => {
+            assert_eq!(obj.owner.unwrap().get_owner_address().unwrap(), address);
             assert_eq!(
-                obj.data.type_().unwrap(),
-                sui_framework_address_concat_string("::devnet_nft::DevNetNFT")
+                obj.type_.clone().unwrap(),
+                ObjectType::from_str(&sui_framework_address_concat_string(
+                    "::devnet_nft::DevNetNFT"
+                ))
+                .unwrap()
             );
             Ok(obj)
         }
@@ -361,7 +365,7 @@ async fn test_move_call_args_linter_command() -> Result<(), anyhow::Error> {
     .await?;
 
     let package = if let SuiClientCommandResult::Publish(response) = resp {
-        response.effects.created[0].reference.object_id
+        response.effects.created()[0].reference.object_id
     } else {
         unreachable!("Invalid response");
     };
@@ -409,7 +413,7 @@ async fn test_move_call_args_linter_command() -> Result<(), anyhow::Error> {
 
     // Get the created object
     let created_obj: ObjectID = if let SuiClientCommandResult::Call(resp) = resp {
-        resp.effects.created.first().unwrap().reference.object_id
+        resp.effects.created().first().unwrap().reference.object_id
     } else {
         panic!();
     };
@@ -525,7 +529,7 @@ async fn test_package_publish_command() -> Result<(), anyhow::Error> {
     let obj_ids = if let SuiClientCommandResult::Publish(response) = resp {
         response
             .effects
-            .created
+            .created()
             .iter()
             .map(|refe| refe.reference.object_id)
             .collect::<Vec<_>>()
@@ -573,8 +577,20 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
     // Get the mutated objects
     let (mut_obj1, mut_obj2) = if let SuiClientCommandResult::Transfer(_, response) = resp {
         (
-            response.effects.mutated.get(0).unwrap().reference.object_id,
-            response.effects.mutated.get(1).unwrap().reference.object_id,
+            response
+                .effects
+                .mutated()
+                .get(0)
+                .unwrap()
+                .reference
+                .object_id,
+            response
+                .effects
+                .mutated()
+                .get(1)
+                .unwrap()
+                .reference
+                .object_id,
         )
     } else {
         panic!()
@@ -587,12 +603,11 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
     }
     .execute(context)
     .await?;
-    let mut_obj1 =
-        if let SuiClientCommandResult::Object(GetObjectDataResponse::Exists(object)) = resp {
-            object
-        } else {
-            panic!()
-        };
+    let mut_obj1 = if let SuiClientCommandResult::Object(SuiObjectResponse::Exists(object)) = resp {
+        object
+    } else {
+        panic!()
+    };
 
     let resp = SuiClientCommands::Object {
         id: mut_obj2,
@@ -600,21 +615,20 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
     }
     .execute(context)
     .await?;
-    let mut_obj2 =
-        if let SuiClientCommandResult::Object(GetObjectDataResponse::Exists(object)) = resp {
-            object
-        } else {
-            panic!()
-        };
+    let mut_obj2 = if let SuiClientCommandResult::Object(SuiObjectResponse::Exists(object)) = resp {
+        object
+    } else {
+        panic!()
+    };
 
-    let (gas, obj) = if mut_obj1.owner.get_owner_address().unwrap() == address {
+    let (gas, obj) = if mut_obj1.owner.unwrap().get_owner_address().unwrap() == address {
         (mut_obj1, mut_obj2)
     } else {
         (mut_obj2, mut_obj1)
     };
 
-    assert_eq!(gas.owner.get_owner_address().unwrap(), address);
-    assert_eq!(obj.owner.get_owner_address().unwrap(), recipient);
+    assert_eq!(gas.owner.unwrap().get_owner_address().unwrap(), address);
+    assert_eq!(obj.owner.unwrap().get_owner_address().unwrap(), recipient);
 
     let object_refs = client
         .read_api()
@@ -639,8 +653,20 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
     // Get the mutated objects
     let (_mut_obj1, _mut_obj2) = if let SuiClientCommandResult::Transfer(_, response) = resp {
         (
-            response.effects.mutated.get(0).unwrap().reference.object_id,
-            response.effects.mutated.get(1).unwrap().reference.object_id,
+            response
+                .effects
+                .mutated()
+                .get(0)
+                .unwrap()
+                .reference
+                .object_id,
+            response
+                .effects
+                .mutated()
+                .get(1)
+                .unwrap()
+                .reference
+                .object_id,
         )
     } else {
         panic!()
@@ -652,7 +678,7 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
 #[test]
 // Test for issue https://github.com/MystenLabs/sui/issues/1078
 fn test_bug_1078() {
-    let read = SuiClientCommandResult::Object(GetObjectDataResponse::NotExists(ObjectID::random()));
+    let read = SuiClientCommandResult::Object(SuiObjectResponse::NotExists(ObjectID::random()));
     let mut writer = String::new();
     // fmt ObjectRead should not fail.
     write!(writer, "{}", read).unwrap();
@@ -825,14 +851,18 @@ async fn test_active_address_command() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn get_gas_value(o: &SuiParsedObject) -> u64 {
+fn get_gas_value(o: &SuiObjectData) -> u64 {
     GasCoin::try_from(o).unwrap().value()
 }
 
-async fn get_object(id: ObjectID, context: &WalletContext) -> Option<SuiParsedObject> {
+async fn get_object(id: ObjectID, context: &WalletContext) -> Option<SuiObjectData> {
     let client = context.get_client().await.unwrap();
-    let response = client.read_api().get_parsed_object(id).await.unwrap();
-    if let GetObjectDataResponse::Exists(o) = response {
+    let response = client
+        .read_api()
+        .get_object_with_options(id, SuiObjectDataOptions::full_content())
+        .await
+        .unwrap();
+    if let SuiObjectResponse::Exists(o) = response {
         Some(o)
     } else {
         None
@@ -842,7 +872,7 @@ async fn get_object(id: ObjectID, context: &WalletContext) -> Option<SuiParsedOb
 async fn get_parsed_object_assert_existence(
     object_id: ObjectID,
     context: &WalletContext,
-) -> SuiObject<SuiParsedData> {
+) -> SuiObjectData {
     get_object(object_id, context)
         .await
         .expect("Object {object_id} does not exist.")
@@ -880,6 +910,7 @@ async fn test_merge_coin() -> Result<(), anyhow::Error> {
         let object_id = r
             .effects
             .mutated_excluding_gas()
+            .into_iter()
             .next()
             .unwrap()
             .reference
@@ -920,6 +951,7 @@ async fn test_merge_coin() -> Result<(), anyhow::Error> {
         let object_id = r
             .effects
             .mutated_excluding_gas()
+            .into_iter()
             .next()
             .unwrap()
             .reference
@@ -970,12 +1002,13 @@ async fn test_split_coin() -> Result<(), anyhow::Error> {
         let updated_object_id = r
             .effects
             .mutated_excluding_gas()
+            .into_iter()
             .next()
             .unwrap()
             .reference
             .object_id;
         let updated_obj = get_parsed_object_assert_existence(updated_object_id, context).await;
-        let new_object_refs = r.effects.created;
+        let new_object_refs = r.effects.created().to_vec();
         let mut new_objects = Vec::with_capacity(new_object_refs.len());
         for obj_ref in new_object_refs {
             new_objects.push(
@@ -1020,12 +1053,13 @@ async fn test_split_coin() -> Result<(), anyhow::Error> {
         let updated_object_id = r
             .effects
             .mutated_excluding_gas()
+            .into_iter()
             .next()
             .unwrap()
             .reference
             .object_id;
         let updated_obj = get_parsed_object_assert_existence(updated_object_id, context).await;
-        let new_object_refs = r.effects.created;
+        let new_object_refs = r.effects.created().to_vec();
         let mut new_objects = Vec::with_capacity(new_object_refs.len());
         for obj_ref in new_object_refs {
             new_objects.push(
@@ -1073,12 +1107,13 @@ async fn test_split_coin() -> Result<(), anyhow::Error> {
         let updated_object_id = r
             .effects
             .mutated_excluding_gas()
+            .into_iter()
             .next()
             .unwrap()
             .reference
             .object_id;
         let updated_obj = get_parsed_object_assert_existence(updated_object_id, context).await;
-        let new_object_refs = r.effects.created;
+        let new_object_refs = r.effects.created().to_vec();
         let mut new_objects = Vec::with_capacity(new_object_refs.len());
         for obj_ref in new_object_refs {
             new_objects.push(

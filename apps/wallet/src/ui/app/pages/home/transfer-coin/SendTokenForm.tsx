@@ -1,17 +1,14 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { useCoinDecimals, useFormatCoin, CoinFormat } from '@mysten/core';
 import { ArrowRight16 } from '@mysten/icons';
-import {
-    SUI_TYPE_ARG,
-    Coin as CoinAPI,
-    type SuiMoveObject,
-} from '@mysten/sui.js';
+import { SUI_TYPE_ARG, Coin as CoinAPI, type CoinStruct } from '@mysten/sui.js';
 import { Field, Form, useFormikContext, Formik } from 'formik';
 import { useMemo, useEffect } from 'react';
 
 import { createValidationSchemaStepOne } from './validation';
-import { useFormatCoin, CoinFormat } from '_app/hooks/useFormatCoin';
+import { useActiveAddress } from '_app/hooks/useActiveAddress';
 import { Button } from '_app/shared/ButtonUI';
 import BottomMenuLayout, {
     Content,
@@ -22,15 +19,7 @@ import { IconTooltip } from '_app/shared/tooltip';
 import { AddressInput } from '_components/address-input';
 import Loading from '_components/loading';
 import { parseAmount } from '_helpers';
-import {
-    useCoinDecimals,
-    useAppSelector,
-    useIndividualCoinMaxBalance,
-} from '_hooks';
-import {
-    accountAggregateBalancesSelector,
-    accountCoinsSelector,
-} from '_redux/slices/account';
+import { useGetCoins } from '_hooks';
 import { Coin, GAS_TYPE_ARG } from '_redux/slices/sui-objects/Coin';
 import { useGasBudgetInMist } from '_src/ui/app/hooks/useGasBudgetInMist';
 import { InputWithAction } from '_src/ui/app/shared/InputWithAction';
@@ -52,7 +41,7 @@ export type SubmitProps = {
     isPayAllSui: boolean;
     coinIds: string[];
     gasBudget: number;
-    coins: SuiMoveObject[];
+    coins: CoinStruct[];
 };
 
 export type SendTokenFormProps = {
@@ -68,7 +57,7 @@ function GasBudgetEstimation({
     suiCoins,
 }: {
     coinDecimals: number;
-    suiCoins: SuiMoveObject[];
+    suiCoins: CoinStruct[];
 }) {
     const { values, setFieldValue } = useFormikContext<FormValues>();
     const gasBudgetEstimationUnits = useMemo(
@@ -122,26 +111,44 @@ export function SendTokenForm({
     initialTo = '',
     initialGasEstimation = 0,
 }: SendTokenFormProps) {
-    const aggregateBalances = useAppSelector(accountAggregateBalancesSelector);
-    const coinBalance = useMemo(
-        () => (coinType && aggregateBalances[coinType]) || BigInt(0),
-        [coinType, aggregateBalances]
+    const activeAddress = useActiveAddress();
+    // Get all coins of the type
+    const { data: coinsData, isLoading: coinsIsLoading } = useGetCoins(
+        coinType,
+        activeAddress!
     );
 
-    const allCoins = useAppSelector(accountCoinsSelector);
-    const coins = allCoins.filter(
-        ({ type }) => CoinAPI.getCoinType(type) === coinType
+    const { data: suiCoinsData, isLoading: suiCoinsIsLoading } = useGetCoins(
+        SUI_TYPE_ARG,
+        activeAddress!
     );
 
-    const suiCoins = allCoins.filter(
-        ({ type }) => CoinAPI.getCoinType(type) === SUI_TYPE_ARG
+    const suiCoins = suiCoinsData?.filter(
+        ({ lockedUntilEpoch }) => !lockedUntilEpoch
     );
 
-    const gasAggregateBalance = aggregateBalances[SUI_TYPE_ARG] || BigInt(0);
+    // filter out locked lockedUntilEpoch
+    const coins = coinsData?.filter(
+        ({ lockedUntilEpoch }) => !lockedUntilEpoch
+    );
+    const coinBalance = CoinAPI.totalBalance(coins || []);
+
+    const gasAggregateBalance = CoinAPI.totalBalance(suiCoins || []);
+
     const coinSymbol = (coinType && CoinAPI.getCoinSymbol(coinType)) || '';
     const [coinDecimals, coinDecimalsQueryResult] = useCoinDecimals(coinType);
     const [gasDecimals, gasQueryResult] = useCoinDecimals(SUI_TYPE_ARG);
-    const maxSuiSingleCoinBalance = useIndividualCoinMaxBalance(SUI_TYPE_ARG);
+    const maxSuiSingleCoinBalance = useMemo(
+        () =>
+            suiCoins?.reduce(
+                (max, c) =>
+                    max < CoinAPI.getBalanceFromCoinStruct(c)
+                        ? CoinAPI.getBalanceFromCoinStruct(c)
+                        : max,
+                BigInt(0)
+            ) || BigInt(0),
+        [suiCoins]
+    );
 
     const validationSchemaStepOne = useMemo(
         () =>
@@ -182,7 +189,9 @@ export function SendTokenForm({
             loading={
                 queryResult.isLoading ||
                 gasQueryResult.isLoading ||
-                coinDecimalsQueryResult.isLoading
+                coinDecimalsQueryResult.isLoading ||
+                suiCoinsIsLoading ||
+                coinsIsLoading
             }
         >
             <Formik
@@ -206,15 +215,15 @@ export function SendTokenForm({
                     gasInputBudgetEst,
                 }: FormValues) => {
                     if (!gasInputBudgetEst || !coins || !suiCoins) return;
-                    const coinsIDs = CoinAPI.sortByBalance(coins)
-                        .reverse()
-                        .map((coin) => CoinAPI.getID(coin));
+                    const coinsIDs = [...coins]
+                        .sort((a, b) => b.balance - a.balance)
+                        .map(({ coinObjectId }) => coinObjectId);
 
                     const data = {
                         to,
                         amount,
                         isPayAllSui,
-                        coins: allCoins,
+                        coins,
                         coinIds: coinsIDs,
                         gasBudget: gasInputBudgetEst,
                     };
@@ -283,10 +292,12 @@ export function SendTokenForm({
                                             }
                                         />
                                     </div>
-                                    <GasBudgetEstimation
-                                        coinDecimals={coinDecimals}
-                                        suiCoins={suiCoins}
-                                    />
+                                    {suiCoins ? (
+                                        <GasBudgetEstimation
+                                            coinDecimals={coinDecimals}
+                                            suiCoins={suiCoins}
+                                        />
+                                    ) : null}
 
                                     <div className="w-full flex gap-2.5 flex-col mt-7.5">
                                         <div className="px-2 tracking-wider">

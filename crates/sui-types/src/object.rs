@@ -294,11 +294,11 @@ impl MoveObject {
     /// This should not be very expensive since the type tag is usually simple, and
     /// we only do this once per object being mutated.
     pub fn object_size_for_gas_metering(&self) -> usize {
-        let seriealized_type_tag =
-            bcs::to_bytes(&self.type_).expect("Serializing type tag should not fail");
+        let serialized_type_tag_size =
+            bcs::serialized_size(&self.type_).expect("Serializing type tag should not fail");
         // + 1 for 'has_public_transfer'
         // + 8 for `version`
-        self.contents.len() + seriealized_type_tag.len() + 1 + 8
+        self.contents.len() + serialized_type_tag_size + 1 + 8
     }
 
     /// Get the total amount of SUI embedded in `self`. Intended for testing purposes
@@ -809,6 +809,16 @@ pub fn generate_test_gas_objects() -> Vec<Object> {
 
 /// Make a few test gas objects (all with the same owner).
 pub fn generate_test_gas_objects_with_owner(count: usize, owner: SuiAddress) -> Vec<Object> {
+    (0..count)
+        .map(|_i| {
+            let gas_object_id = ObjectID::random();
+            Object::with_id_owner_gas_for_testing(gas_object_id, owner, GAS_VALUE_FOR_TESTING)
+        })
+        .collect()
+}
+
+/// Make a few test gas objects (all with the same owner) with max u64 balance.
+pub fn generate_max_test_gas_objects_with_owner(count: usize, owner: SuiAddress) -> Vec<Object> {
     (0..count)
         .map(|_i| {
             let gas_object_id = ObjectID::random();

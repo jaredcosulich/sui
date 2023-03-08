@@ -27,6 +27,7 @@ use tonic::Status;
 use typed_store::rocks::TypedStoreError;
 
 pub const TRANSACTION_NOT_FOUND_MSG_PREFIX: &str = "Could not find the referenced transaction";
+pub const TRANSACTIONS_NOT_FOUND_MSG_PREFIX: &str = "Could not find the referenced transactions";
 
 #[macro_export]
 macro_rules! fp_bail {
@@ -117,6 +118,8 @@ pub enum UserInputError {
     DuplicateObjectRefInput,
 
     // Gas related errors
+    #[error("Transaction gas payment missing.")]
+    MissingGasPayment,
     #[error("Gas object is not an owned object with owner: {:?}.", owner)]
     GasObjectNotOwnedObject { owner: Owner },
     #[error("Gas budget: {:?} is higher than max: {:?}.", gas_budget, max_budget)]
@@ -186,7 +189,7 @@ pub enum UserInputError {
 pub enum SuiError {
     #[error("Error checking transaction input objects: {:?}", error)]
     UserInputError { error: UserInputError },
-    #[error("Expecting a singler owner, shared ownership found")]
+    #[error("Expecting a single owner, shared ownership found")]
     UnexpectedOwnerType,
 
     #[error("Input {object_id} already has {queue_len} transactions pending, above threshold of {threshold}")]
@@ -292,6 +295,8 @@ pub enum SuiError {
     },
     #[error("{TRANSACTION_NOT_FOUND_MSG_PREFIX} [{:?}].", digest)]
     TransactionNotFound { digest: TransactionDigest },
+    #[error("{TRANSACTIONS_NOT_FOUND_MSG_PREFIX} [{:?}].", digests)]
+    TransactionsNotFound { digests: Vec<TransactionDigest> },
     #[error("Could not find the referenced transaction events [{digest:?}].")]
     TransactionEventsNotFound { digest: TransactionEventsDigest },
     #[error(
@@ -418,6 +423,12 @@ pub enum SuiError {
     #[error("Failed to get the system state object content")]
     SuiSystemStateNotFound,
 
+    #[error("Found the sui system state object but it has an unexpected version")]
+    SuiSystemStateUnexpectedVersion,
+
+    #[error("Message version is not supported at the current protocol version: {error}")]
+    WrongMessageVersion { error: String },
+
     #[error("unknown error: {0}")]
     Unknown(String),
 }
@@ -432,10 +443,18 @@ pub enum VMMemoryLimitExceededSubStatusCode {
     NEW_ID_COUNT_LIMIT_EXCEEDED = 2,
     DELETED_ID_COUNT_LIMIT_EXCEEDED = 3,
     TRANSFER_ID_COUNT_LIMIT_EXCEEDED = 4,
+    OBJECT_RUNTIME_CACHE_LIMIT_EXCEEDED = 5,
+    OBJECT_RUNTIME_STORE_LIMIT_EXCEEDED = 6,
 }
 
 pub type SuiResult<T = ()> = Result<T, SuiError>;
 pub type UserInputResult<T = ()> = Result<T, UserInputError>;
+
+impl From<sui_protocol_config::Error> for SuiError {
+    fn from(error: sui_protocol_config::Error) -> Self {
+        SuiError::WrongMessageVersion { error: error.0 }
+    }
+}
 
 // TODO these are both horribly wrong, categorization needs to be considered
 impl From<PartialVMError> for SuiError {
@@ -462,7 +481,7 @@ impl From<VMError> for SuiError {
 
 impl From<Status> for SuiError {
     fn from(status: Status) -> Self {
-        let result = bincode::deserialize::<SuiError>(status.details());
+        let result = bcs::from_bytes::<SuiError>(status.details());
         if let Ok(sui_error) = result {
             sui_error
         } else {
@@ -476,7 +495,7 @@ impl From<Status> for SuiError {
 
 impl From<SuiError> for Status {
     fn from(error: SuiError) -> Self {
-        let bytes = bincode::serialize(&error).unwrap();
+        let bytes = bcs::to_bytes(&error).unwrap();
         Status::with_details(tonic::Code::Internal, error.to_string(), bytes.into())
     }
 }
@@ -561,6 +580,19 @@ impl SuiError {
                 (false, true)
             }
             _ => (false, false),
+        }
+    }
+
+    pub fn is_object_or_package_not_found(&self) -> bool {
+        match self {
+            SuiError::UserInputError { error } => {
+                matches!(
+                    error,
+                    UserInputError::ObjectNotFound { .. }
+                        | UserInputError::DependentPackageNotFound { .. }
+                )
+            }
+            _ => false,
         }
     }
 }
@@ -694,7 +726,7 @@ pub fn convert_vm_error<
                         let offset = error.offsets().first().copied().map(|(f, i)| (f.0, i));
                         debug_assert!(
                             offset.is_some(),
-                            "Move should set the location on all execution errors"
+                            "Move should set the location on all execution errors. Error {error}"
                         );
                         let (function, instruction) = offset.unwrap_or((0, 0));
                         let function_name = vm.load_module(id, state_view).ok().map(|module| {

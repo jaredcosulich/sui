@@ -26,12 +26,12 @@ use std::time::Duration;
 use sui_protocol_config::ProtocolVersion;
 use sui_storage::write_path_pending_tx_log::WritePathPendingTransactionLog;
 use sui_types::base_types::TransactionDigest;
-use sui_types::committee::Committee;
+use sui_types::committee::CommitteeWithNetworkMetadata;
 use sui_types::error::{SuiError, SuiResult};
 use sui_types::messages::{
     ExecuteTransactionRequest, ExecuteTransactionRequestType, ExecuteTransactionResponse,
-    FinalizedEffects, QuorumDriverResponse, VerifiedCertifiedTransactionEffects,
-    VerifiedExecutableTransaction,
+    FinalizedEffects, QuorumDriverResponse, TransactionEffectsAPI,
+    VerifiedCertifiedTransactionEffects, VerifiedExecutableTransaction,
 };
 use sui_types::quorum_driver_types::{
     QuorumDriverEffectsQueueResult, QuorumDriverError, QuorumDriverResult,
@@ -62,7 +62,7 @@ pub struct TransactiondOrchestrator<A> {
 impl TransactiondOrchestrator<NetworkAuthorityClient> {
     pub async fn new_with_network_clients(
         validator_state: Arc<AuthorityState>,
-        reconfig_channel: Receiver<(Committee, ProtocolVersion)>,
+        reconfig_channel: Receiver<(CommitteeWithNetworkMetadata, ProtocolVersion)>,
         parent_path: &Path,
         prometheus_registry: &Registry,
     ) -> anyhow::Result<Self> {
@@ -221,7 +221,7 @@ where
                 }
                 let executable_tx = VerifiedExecutableTransaction::new_from_quorum_execution(
                     transaction,
-                    effects_cert.executed_epoch,
+                    effects_cert.executed_epoch(),
                 );
 
                 match Self::execute_finalized_tx_locally_with_timeout(
@@ -347,7 +347,7 @@ where
                 Ok(Ok((transaction, QuorumDriverResponse { effects_cert, .. }))) => {
                     let executable_tx = VerifiedExecutableTransaction::new_from_quorum_execution(
                         transaction,
-                        effects_cert.executed_epoch,
+                        effects_cert.executed_epoch(),
                     );
                     let tx_digest = executable_tx.digest();
                     if let Err(err) = pending_transaction_log.finish_transaction(tx_digest) {

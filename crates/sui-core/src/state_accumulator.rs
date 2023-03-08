@@ -7,13 +7,12 @@ use tracing::debug;
 use typed_store::Map;
 
 use std::sync::Arc;
-use sui_types::base_types::ObjectDigest;
 
-use fastcrypto::hash::{Digest, MultisetHash};
+use fastcrypto::hash::MultisetHash;
 use sui_types::accumulator::Accumulator;
 use sui_types::error::SuiResult;
-use sui_types::messages::TransactionEffects;
-use sui_types::messages_checkpoint::CheckpointSequenceNumber;
+use sui_types::messages::{TransactionEffects, TransactionEffectsAPI};
+use sui_types::messages_checkpoint::{CheckpointSequenceNumber, ECMHLiveObjectSetDigest};
 use typed_store::rocks::TypedStoreError;
 
 use crate::authority::authority_per_epoch_store::AuthorityPerEpochStore;
@@ -46,40 +45,19 @@ impl StateAccumulator {
         acc.insert_all(
             effects
                 .iter()
-                .flat_map(|fx| {
-                    fx.created
-                        .clone()
-                        .into_iter()
-                        .map(|(obj_ref, _)| obj_ref.2)
-                        .collect::<Vec<ObjectDigest>>()
-                })
-                .collect::<Vec<ObjectDigest>>(),
+                .flat_map(|fx| fx.created().iter().map(|(obj_ref, _)| obj_ref.2)),
         );
         acc.remove_all(
             effects
                 .iter()
-                .flat_map(|fx| {
-                    fx.deleted
-                        .clone()
-                        .into_iter()
-                        .map(|obj_ref| obj_ref.2)
-                        .collect::<Vec<ObjectDigest>>()
-                })
-                .collect::<Vec<ObjectDigest>>(),
+                .flat_map(|fx| fx.deleted().iter().map(|obj_ref| obj_ref.2)),
         );
 
         // TODO almost certainly not currectly handling "mutated" effects.
         acc.insert_all(
             effects
                 .iter()
-                .flat_map(|fx| {
-                    fx.mutated
-                        .clone()
-                        .into_iter()
-                        .map(|(obj_ref, _)| obj_ref.2)
-                        .collect::<Vec<ObjectDigest>>()
-                })
-                .collect::<Vec<ObjectDigest>>(),
+                .flat_map(|fx| fx.mutated().iter().map(|(obj_ref, _)| obj_ref.2)),
         );
 
         epoch_store.insert_state_hash_for_checkpoint(&checkpoint_seq_num, &acc)?;
@@ -182,10 +160,11 @@ impl StateAccumulator {
         epoch: &EpochId,
         last_checkpoint_of_epoch: CheckpointSequenceNumber,
         epoch_store: Arc<AuthorityPerEpochStore>,
-    ) -> Result<Digest<32>, TypedStoreError> {
+    ) -> Result<ECMHLiveObjectSetDigest, TypedStoreError> {
         Ok(self
             .accumulate_epoch(epoch, last_checkpoint_of_epoch, epoch_store)
             .await?
-            .digest())
+            .digest()
+            .into())
     }
 }

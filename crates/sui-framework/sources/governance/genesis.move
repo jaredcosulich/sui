@@ -14,8 +14,7 @@ module sui::genesis {
     use std::option;
 
     /// Initial value of the lower-bound on the amount of stake required to become a validator.
-    /// TODO: testnet only. Needs to be changed.
-    const INIT_MIN_VALIDATOR_STAKE: u64 = 1;
+    const INIT_MIN_VALIDATOR_STAKE: u64 = 25_000_000_000_000_000;
 
     /// Initial value of the upper-bound on the number of validators.
     const INIT_MAX_VALIDATOR_COUNT: u64 = 100;
@@ -31,6 +30,8 @@ module sui::genesis {
     /// all the information we need in the system.
     fun create(
         initial_sui_custody_account_address: address,
+        initial_validator_stake_mist: u64,
+        governance_start_epoch: u64,
         validator_pubkeys: vector<vector<u8>>,
         validator_network_pubkeys: vector<vector<u8>>,
         validator_worker_pubkeys: vector<vector<u8>>,
@@ -101,13 +102,12 @@ module sui::genesis {
                 p2p_address,
                 primary_address,
                 worker_address,
-                // TODO Figure out if we want to instead initialize validators with 0 stake.
-                // Initialize all validators with 1 Mist stake.
-                balance::split(&mut sui_supply, 1),
+                // Initialize all validators with uniform stake taken from the subsidy fund.
+                option::some(balance::split(&mut subsidy_fund, initial_validator_stake_mist)),
                 option::none(),
                 gas_price,
                 commission_rate,
-                0, // start operating right away at epoch 0
+                true, // validator is active right away
                 ctx
             ));
             i = i + 1;
@@ -119,6 +119,7 @@ module sui::genesis {
             storage_fund,
             INIT_MAX_VALIDATOR_COUNT,
             INIT_MIN_VALIDATOR_STAKE,
+            governance_start_epoch,
             INIT_STAKE_SUBSIDY_AMOUNT,
             protocol_version,
             system_state_version,

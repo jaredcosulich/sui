@@ -11,6 +11,7 @@ use once_cell::sync::OnceCell;
 use rocksdb::Options;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::iter;
 use std::path::Path;
 use std::sync::Arc;
@@ -70,7 +71,13 @@ impl AuthorityStore {
     ) -> SuiResult<Self> {
         let perpetual_tables = Arc::new(AuthorityPerpetualTables::open(path, db_options.clone()));
         if perpetual_tables.database_is_empty()? {
-            perpetual_tables.set_recovery_epoch(0)?;
+            let epoch_start_configuration = EpochStartConfiguration::new(
+                genesis.sui_system_object().into_epoch_start_state(),
+                genesis.checkpoint().digest(),
+            );
+            perpetual_tables
+                .set_epoch_start_configuration(&epoch_start_configuration)
+                .await?;
         }
         let cur_epoch = perpetual_tables.get_recovery_epoch_at_restart()?;
         let committee = committee_store
@@ -175,6 +182,13 @@ impl AuthorityStore {
             })
     }
 
+    pub fn multi_get_events(
+        &self,
+        event_digests: &[TransactionEventsDigest],
+    ) -> SuiResult<Vec<Option<TransactionEvents>>> {
+        Ok(self.perpetual_tables.events.multi_get(event_digests)?)
+    }
+
     pub fn multi_get_effects<'a>(
         &self,
         effects_digests: impl Iterator<Item = &'a TransactionEffectsDigest>,
@@ -204,7 +218,7 @@ impl AuthorityStore {
         let mut tx_to_effects_map = effects
             .into_iter()
             .flatten()
-            .map(|effects| (effects.transaction_digest, effects))
+            .map(|effects| (*effects.transaction_digest(), effects))
             .collect::<HashMap<_, _>>();
         Ok(digests
             .iter()
@@ -278,6 +292,18 @@ impl AuthorityStore {
             .get(digest)?)
     }
 
+    pub fn multi_get_transaction_checkpoint(
+        &self,
+        digests: &[TransactionDigest],
+    ) -> SuiResult<Vec<Option<(EpochId, CheckpointSequenceNumber)>>> {
+        Ok(self
+            .perpetual_tables
+            .executed_transactions_to_checkpoint
+            .multi_get(digests)?
+            .into_iter()
+            .collect())
+    }
+
     /// Returns true if there are no objects in the database
     pub fn database_is_empty(&self) -> SuiResult<bool> {
         self.perpetual_tables.database_is_empty()
@@ -345,7 +371,7 @@ impl AuthorityStore {
         digest: &TransactionDigest,
         objects: &[InputObjectKind],
         epoch_store: &AuthorityPerEpochStore,
-    ) -> Vec<InputKey> {
+    ) -> BTreeSet<InputKey> {
         let mut shared_locks = HashMap::<ObjectID, SequenceNumber>::new();
         objects
             .iter()
@@ -603,6 +629,20 @@ impl AuthorityStore {
         batch.write()?;
 
         Ok(())
+    }
+
+    pub async fn set_epoch_start_configuration(
+        &self,
+        epoch_start_configuration: &EpochStartConfiguration,
+    ) -> SuiResult {
+        self.perpetual_tables
+            .set_epoch_start_configuration(epoch_start_configuration)
+            .await?;
+        Ok(())
+    }
+
+    pub fn get_epoch_start_configuration(&self) -> SuiResult<Option<EpochStartConfiguration>> {
+        Ok(self.perpetual_tables.epoch_start_configuration.get(&())?)
     }
 
     /// Updates the state resulting from the execution of a certificate.
@@ -1034,7 +1074,7 @@ impl AuthorityStore {
         };
 
         // We should never be reverting shared object transactions.
-        assert!(effects.shared_objects.is_empty());
+        assert!(effects.shared_objects().is_empty());
 
         let mut write_batch = self.perpetual_tables.transactions.batch();
         write_batch = write_batch
@@ -1046,27 +1086,27 @@ impl AuthorityStore {
             )?;
 
         let all_new_refs = effects
-            .mutated
+            .mutated()
             .iter()
-            .chain(effects.created.iter())
-            .chain(effects.unwrapped.iter())
+            .chain(effects.created().iter())
+            .chain(effects.unwrapped().iter())
             .map(|(r, _)| r)
-            .chain(effects.deleted.iter())
-            .chain(effects.unwrapped_then_deleted.iter())
-            .chain(effects.wrapped.iter());
+            .chain(effects.deleted().iter())
+            .chain(effects.unwrapped_then_deleted().iter())
+            .chain(effects.wrapped().iter());
         write_batch = write_batch.delete_batch(&self.perpetual_tables.parent_sync, all_new_refs)?;
 
         let all_new_object_keys = effects
-            .mutated
+            .mutated()
             .iter()
-            .chain(effects.created.iter())
-            .chain(effects.unwrapped.iter())
+            .chain(effects.created().iter())
+            .chain(effects.unwrapped().iter())
             .map(|((id, version, _), _)| ObjectKey(*id, *version));
         write_batch = write_batch
             .delete_batch(&self.perpetual_tables.objects, all_new_object_keys.clone())?;
 
         let modified_object_keys = effects
-            .modified_at_versions
+            .modified_at_versions()
             .iter()
             .map(|(id, version)| ObjectKey(*id, *version));
 
@@ -1166,6 +1206,27 @@ impl AuthorityStore {
         Ok(())
     }
 
+    pub fn multi_insert_transaction_and_effects<'a>(
+        &self,
+        transactions: impl Iterator<Item = &'a VerifiedExecutionData>,
+    ) -> Result<(), TypedStoreError> {
+        let mut write_batch = self.perpetual_tables.transactions.batch();
+        for tx in transactions {
+            write_batch = write_batch
+                .insert_batch(
+                    &self.perpetual_tables.transactions,
+                    [(tx.transaction.digest(), tx.transaction.serializable_ref())],
+                )?
+                .insert_batch(
+                    &self.perpetual_tables.effects,
+                    [(tx.effects.digest(), &tx.effects)],
+                )?;
+        }
+
+        write_batch.write()?;
+        Ok(())
+    }
+
     pub fn multi_get_transactions(
         &self,
         tx_digests: &[TransactionDigest],
@@ -1185,6 +1246,23 @@ impl AuthorityStore {
             .transactions
             .get(tx_digest)
             .map(|v| v.map(|v| v.into()))
+    }
+
+    pub fn get_transaction_and_serialized_size(
+        &self,
+        tx_digest: &TransactionDigest,
+    ) -> Result<Option<(VerifiedTransaction, usize)>, TypedStoreError> {
+        self.perpetual_tables
+            .transactions
+            .get_raw_bytes(tx_digest)
+            .and_then(|v| match v {
+                Some(tx_bytes) => {
+                    let tx: VerifiedTransaction =
+                        bcs::from_bytes::<TrustedTransaction>(&tx_bytes)?.into();
+                    Ok(Some((tx, tx_bytes.len())))
+                }
+                None => Ok(None),
+            })
     }
 
     // TODO: Transaction Orchestrator also calls this, which is not ideal.

@@ -74,21 +74,27 @@ export async function setup() {
 
 export async function publishPackage(
   signer: RawSigner,
-  useLocalTxnBuilder: boolean,
   packagePath: string,
 ): Promise<ObjectId> {
   const { execSync } = require('child_process');
+  const tmp = require('tmp');
+  // remove all controlled temporary objects on process exit
+  tmp.setGracefulCleanup();
+
+  const tmpobj = tmp.dirSync({ unsafeCleanup: true });
+
   const compiledModules = JSON.parse(
     execSync(
-      `${SUI_BIN} move build --dump-bytecode-as-base64 --path ${packagePath}`,
+      `${SUI_BIN} move build --dump-bytecode-as-base64 --path ${packagePath} --install-dir ${tmpobj.name}`,
       { encoding: 'utf-8' },
     ),
   );
-  const publishTxn = await signer.publish({
-    compiledModules: useLocalTxnBuilder
-      ? compiledModules.map((m: any) => Array.from(fromB64(m)))
-      : compiledModules,
-    gasBudget: DEFAULT_GAS_BUDGET,
+  const publishTxn = await signer.signAndExecuteTransaction({
+    kind: 'publish',
+    data: {
+      compiledModules: compiledModules.map((m: any) => Array.from(fromB64(m))),
+      gasBudget: DEFAULT_GAS_BUDGET,
+    },
   });
   expect(getExecutionStatusType(publishTxn)).toEqual('success');
 

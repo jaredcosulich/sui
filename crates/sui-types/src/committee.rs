@@ -3,11 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::base_types::*;
-use crate::crypto::{random_committee_key_pairs, sha3_hash, AuthorityKeyPair, AuthorityPublicKey};
+use crate::crypto::{
+    random_committee_key_pairs, AuthorityKeyPair, AuthorityPublicKey, NetworkPublicKey,
+};
 use crate::error::{SuiError, SuiResult};
-use crate::messages::CommitteeInfo;
 use fastcrypto::traits::KeyPair;
 use itertools::Itertools;
+use multiaddr::Multiaddr;
 use rand::rngs::ThreadRng;
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -311,19 +313,6 @@ impl Committee {
     }
 }
 
-impl TryFrom<CommitteeInfo> for Committee {
-    type Error = SuiError;
-    fn try_from(committee_info: CommitteeInfo) -> Result<Self, Self::Error> {
-        Self::new(
-            committee_info.epoch,
-            committee_info
-                .committee_info
-                .into_iter()
-                .collect::<BTreeMap<_, _>>(),
-        )
-    }
-}
-
 impl PartialEq for Committee {
     fn eq(&self, other: &Self) -> bool {
         self.epoch == other.epoch
@@ -361,23 +350,30 @@ pub fn validity_threshold(total_stake: StakeUnit) -> StakeUnit {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommitteeWithNetAddresses {
-    pub committee: Committee,
-    pub net_addresses: BTreeMap<AuthorityName, Vec<u8>>,
+pub struct NetworkMetadata {
+    pub network_pubkey: NetworkPublicKey,
+    pub network_address: Multiaddr,
+    pub p2p_address: Multiaddr,
 }
 
-impl CommitteeWithNetAddresses {
-    pub fn digest(&self) -> CommitteeDigest {
-        sha3_hash(self)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommitteeWithNetworkMetadata {
+    pub committee: Committee,
+    pub network_metadata: BTreeMap<AuthorityName, NetworkMetadata>,
+}
+
+impl CommitteeWithNetworkMetadata {
+    pub fn epoch(&self) -> EpochId {
+        self.committee.epoch()
     }
 }
 
-impl Display for CommitteeWithNetAddresses {
+impl Display for CommitteeWithNetworkMetadata {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "CommitteeWithNetAddresses (committee={}, net_addresses={:?})",
-            self.committee, self.net_addresses
+            "CommitteeWithNetworkMetadata (committee={}, network_metadata={:?})",
+            self.committee, self.network_metadata
         )
     }
 }

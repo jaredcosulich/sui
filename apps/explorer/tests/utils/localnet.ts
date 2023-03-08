@@ -10,9 +10,8 @@ import {
     RawSigner,
     LocalTxnDataSerializer,
     type Keypair,
-    SuiExecuteTransactionResponse,
-    assert,
     localnetConnection,
+    Transaction,
 } from '@mysten/sui.js';
 
 const addressToKeypair = new Map<string, Keypair>();
@@ -31,26 +30,25 @@ export async function mint(address: string) {
         new LocalTxnDataSerializer(provider)
     );
 
-    const [gasPayment] = await provider.getGasObjectsOwnedByAddress(
-        keypair.getPublicKey().toSuiAddress()
+    const tx = new Transaction();
+    tx.add(
+        Transaction.Commands.MoveCall({
+            target: '0x2::devnet_nft::mint',
+            typeArguments: [],
+            arguments: [
+                tx.input('Example NFT'),
+                tx.input('An example NFT.'),
+                tx.input(
+                    'ipfs://bafkreibngqhl3gaa7daob4i2vccziay2jjlp435cf66vhono7nrvww53ty'
+                ),
+            ],
+        })
     );
+    tx.setGasBudget(30000);
 
-    const tx = await signer.executeMoveCall({
-        packageObjectId: '0x2',
-        module: 'devnet_nft',
-        function: 'mint',
-        typeArguments: [],
-        arguments: [
-            'Example NFT',
-            'An example NFT.',
-            'ipfs://bafkreibngqhl3gaa7daob4i2vccziay2jjlp435cf66vhono7nrvww53ty',
-        ],
-        gasPayment: gasPayment.objectId,
-        gasBudget: 30000,
-    });
+    const result = await signer.signAndExecuteTransaction(tx);
 
-    assert(tx, SuiExecuteTransactionResponse);
-    return tx;
+    return result;
 }
 
 export async function faucet() {

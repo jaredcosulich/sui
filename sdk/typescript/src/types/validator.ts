@@ -83,7 +83,7 @@ export const DelegatedStake = object({
 });
 
 export const ParametersFields = object({
-  max_validator_candidate_count: string(),
+  max_validator_count: string(),
   min_validator_stake: string(),
   storage_gas_price: optional(string()),
 });
@@ -136,7 +136,8 @@ export const DelegationStakingPoolFields = object({
   pending_total_sui_withdraw: number(),
   pool_token_balance: number(),
   rewards_pool: object({ value: number() }),
-  starting_epoch: number(),
+  activation_epoch: object({ vec: array(number()) }),
+  deactivation_epoch: object({ vec: array() }),
   sui_balance: number(),
 });
 
@@ -147,15 +148,14 @@ export const DelegationStakingPool = object({
 
 export const CommitteeInfo = object({
   epoch: number(),
-  // TODO(cleanup): remove optional after TestNet Wave 2(0.22.0)
-  protocol_version: optional(number()),
-  /* array of (validator public key, stake unit) tuple */
-  committee_info: optional(array(tuple([AuthorityName, number()]))),
+  /** Array of (validator public key, stake unit) tuple */
+  validators: optional(array(tuple([AuthorityName, number()]))),
 });
 
 export const SystemParameters = object({
   min_validator_stake: number(),
-  max_validator_candidate_count: number(),
+  max_validator_count: number(),
+  governance_start_epoch: number(),
   storage_gas_price: optional(number()),
 });
 
@@ -179,18 +179,22 @@ export const ValidatorPair = object({
 export const ValidatorSet = object({
   total_stake: number(),
   active_validators: array(Validator),
-  pending_validators: object({
+  pending_active_validators: object({
     contents: object({
       id: string(),
       size: number(),
     }),
   }),
   pending_removals: array(number()),
-  // TODO: Remove this after 0.28.0 is released
-  pending_delegation_switches: optional(
-    object({ contents: array(ValidatorPair) }),
-  ),
   staking_pool_mappings: object({
+    id: string(),
+    size: number(),
+  }),
+  inactive_pools: object({
+    id: string(),
+    size: number(),
+  }),
+  validator_candidates: object({
     id: string(),
     size: number(),
   }),
@@ -198,8 +202,7 @@ export const ValidatorSet = object({
 
 export const SuiSystemState = object({
   epoch: number(),
-  // TODO(cleanup): remove optional after TestNet Wave 2(0.22.0)
-  protocol_version: optional(number()),
+  protocol_version: number(),
   validators: ValidatorSet,
   storage_fund: Balance,
   parameters: SystemParameters,
@@ -211,3 +214,63 @@ export const SuiSystemState = object({
 });
 
 export type SuiSystemState = Infer<typeof SuiSystemState>;
+
+export const SuiValidatorSummary = object({
+  sui_address: SuiAddress,
+  protocol_pubkey_bytes: array(number()),
+  network_pubkey_bytes: array(number()),
+  worker_pubkey_bytes: array(number()),
+  proof_of_possession_bytes: array(number()),
+  name: string(),
+  description: string(),
+  image_url: string(),
+  project_url: string(),
+  p2p_address: array(number()),
+  net_address: array(number()),
+  primary_address: array(number()),
+  worker_address: array(number()),
+  next_epoch_protocol_pubkey_bytes: nullable(array(number())),
+  next_epoch_proof_of_possession: nullable(array(number())),
+  next_epoch_network_pubkey_bytes: nullable(array(number())),
+  next_epoch_worker_pubkey_bytes: nullable(array(number())),
+  next_epoch_net_address: nullable(array(number())),
+  next_epoch_p2p_address: nullable(array(number())),
+  next_epoch_primary_address: nullable(array(number())),
+  next_epoch_worker_address: nullable(array(number())),
+  voting_power: number(),
+  gas_price: number(),
+  commission_rate: number(),
+  next_epoch_stake: number(),
+  next_epoch_gas_price: number(),
+  next_epoch_commission_rate: number(),
+  staking_pool_id: string(),
+  staking_pool_activation_epoch: nullable(number()),
+  staking_pool_deactivation_epoch: nullable(number()),
+  staking_pool_sui_balance: number(),
+  rewards_pool: number(),
+  pool_token_balance: number(),
+  pending_delegation: number(),
+  pending_pool_token_withdraw: number(),
+  pending_total_sui_withdraw: number(),
+});
+
+export type SuiValidatorSummary = Infer<typeof SuiValidatorSummary>;
+
+export const SuiSystemStateSummary = object({
+  epoch: number(),
+  protocol_version: number(),
+  storage_fund: number(),
+  reference_gas_price: number(),
+  safe_mode: boolean(),
+  epoch_start_timestamp_ms: number(),
+  min_validator_stake: number(),
+  max_validator_candidate_count: number(),
+  governance_start_epoch: number(),
+  stake_subsidy_epoch_counter: number(),
+  stake_subsidy_balance: number(),
+  stake_subsidy_current_epoch_amount: number(),
+  total_stake: number(),
+  active_validators: array(SuiValidatorSummary),
+});
+
+export type SuiSystemStateSummary = Infer<typeof SuiSystemStateSummary>;

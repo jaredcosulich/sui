@@ -4,8 +4,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import {
   Coin,
-  getObjectId,
-  LocalTxnDataSerializer,
   normalizeSuiObjectId,
   ObjectId,
   RawSigner,
@@ -25,21 +23,20 @@ describe('Coin related API', () => {
 
   beforeAll(async () => {
     toolbox = await setup();
-    signer = new RawSigner(
-      toolbox.keypair,
-      toolbox.provider,
-      new LocalTxnDataSerializer(toolbox.provider),
-    );
+    signer = new RawSigner(toolbox.keypair, toolbox.provider);
     const coins = await toolbox.provider.getGasObjectsOwnedByAddress(
       toolbox.address(),
     );
     coinToSplit = coins[0].objectId;
     // split coins into desired amount
-    await signer.splitCoin({
-      coinObjectId: coinToSplit,
-      splitAmounts: SPLIT_AMOUNTS.map((s) => Number(s)),
-      gasBudget: DEFAULT_GAS_BUDGET,
-      gasPayment: coins[1].objectId,
+    await signer.signAndExecuteTransaction({
+      kind: 'splitCoin',
+      data: {
+        coinObjectId: coinToSplit,
+        splitAmounts: SPLIT_AMOUNTS.map((s) => Number(s)),
+        gasBudget: DEFAULT_GAS_BUDGET,
+        gasPayment: coins[1].objectId,
+      },
     });
     coinsAfterSplit = await toolbox.provider.getGasObjectsOwnedByAddress(
       toolbox.address(),
@@ -80,7 +77,7 @@ describe('Coin related API', () => {
             BigInt(a),
           );
         expect(coins.length).toEqual(coinsAfterSplit.length - i);
-        const balances = coins.map((c) => Coin.getBalance(c)!);
+        const balances = coins.map((c) => Coin.getBalanceFromCoinStruct(c));
         // verify that the balances are in ascending order
         expect(balances).toStrictEqual(balances.sort());
         // verify that balances are all greater than or equal to the provided amount
@@ -95,7 +92,9 @@ describe('Coin related API', () => {
         toolbox.address(),
         BigInt(1),
       );
-    expect(coins.find((c) => getObjectId(c) === coinToSplit)).toBeDefined();
+    expect(
+      coins.find(({ coinObjectId }) => coinObjectId === coinToSplit),
+    ).toBeDefined();
 
     const coinsWithExclude =
       await toolbox.provider.selectCoinsWithBalanceGreaterThanOrEqual(
@@ -105,7 +104,7 @@ describe('Coin related API', () => {
         [coinToSplit],
       );
     expect(
-      coinsWithExclude.find((c) => getObjectId(c) === coinToSplit),
+      coinsWithExclude.find(({ coinObjectId }) => coinObjectId === coinToSplit),
     ).toBeUndefined();
   });
 
@@ -117,7 +116,7 @@ describe('Coin related API', () => {
             toolbox.address(),
             BigInt(a),
           );
-        const balances = coins.map((c) => Coin.getBalance(c)!);
+        const balances = coins.map((c) => Coin.getBalanceFromCoinStruct(c));
         expect(balances).toStrictEqual([SPLIT_AMOUNTS[i]]);
       }),
     );
@@ -127,14 +126,16 @@ describe('Coin related API', () => {
         toolbox.address(),
         BigInt(1),
       );
-    const largestBalance = Coin.getBalance(allCoins[allCoins.length - 1])!;
+    const largestBalance = Coin.getBalanceFromCoinStruct(
+      allCoins[allCoins.length - 1],
+    );
 
     const coins =
       await toolbox.provider.selectCoinSetWithCombinedBalanceGreaterThanOrEqual(
         toolbox.address(),
         largestBalance + SPLIT_AMOUNTS[0],
       );
-    const balances = coins.map((c) => Coin.getBalance(c)!);
+    const balances = coins.map((c) => Coin.getBalanceFromCoinStruct(c));
     expect(balances).toStrictEqual([SPLIT_AMOUNTS[0], largestBalance]);
   });
 });

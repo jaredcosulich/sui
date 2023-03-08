@@ -21,4 +21,8 @@ module sui::test_utils {
     public fun print(str: vector<u8>) {
         std::debug::print(&std::ascii::string(str))
     }
+
+    public native fun destroy<T>(x: T);
+
+    public native fun create_one_time_witness<T: drop>(): T;
 }
