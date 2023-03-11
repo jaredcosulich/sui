@@ -18,7 +18,9 @@ use move_core_types::{
     value::{MoveStruct, MoveValue},
 };
 use move_package::source_package::manifest_parser;
-use sui_framework_build::compiled_package::{BuildConfig, SuiPackageHooks};
+use sui_framework_build::compiled_package::{
+    check_unpublished_dependencies, gather_dependencies, BuildConfig,
+};
 use sui_types::{
     crypto::{get_key_pair, AccountKeyPair},
     error::SuiError,
@@ -493,9 +495,8 @@ async fn test_object_owning_another_object() {
         vec![]
     };
     assert!(effects.status().is_ok());
-    assert_eq!(events.len(), 7);
-    // TODO: figure out why an extra event is emitted.
-    // assert_eq!(events.len(), 6);
+
+    assert_eq!(events.len(), 6);
     let num_transfers = events
         .iter()
         .filter(|e| matches!(e.event_type(), EventType::TransferObject { .. }))
@@ -802,9 +803,7 @@ async fn test_create_then_delete_parent_child_wrap_separate() {
     assert!(effects.status().is_ok());
     assert_eq!(effects.created().len(), 1);
     assert_eq!(effects.wrapped().len(), 1);
-    // assert_eq!(events.len(), 4);
-    // TODO: figure out why an extra event is being emitted here.
-    assert_eq!(events.len(), 5);
+    assert_eq!(events.len(), 4);
 
     // Delete the parent and child altogether.
     let effects = call_move(
@@ -2097,16 +2096,14 @@ async fn test_generate_lock_file() {
 
 #[tokio::test]
 #[cfg_attr(msim, ignore)]
-async fn test_custom_property_published_at() {
+async fn test_custom_property_parse_published_at() {
     let build_config = BuildConfig::new_for_testing();
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.extend(["src", "unit_tests", "data", "custom_properties_in_manifest"]);
 
-    move_package::package_hooks::register_package_hooks(Box::new(SuiPackageHooks {}));
     sui_framework::build_move_package(&path, build_config).expect("Move package did not build");
-    let manifest =
-        manifest_parser::parse_move_manifest_from_file(&path.as_path().join("Move.toml"))
-            .expect("Could not parse Move.toml");
+    let manifest = manifest_parser::parse_move_manifest_from_file(path.as_path())
+        .expect("Could not parse Move.toml");
     let properties = manifest
         .package
         .custom_properties
@@ -2123,6 +2120,37 @@ async fn test_custom_property_published_at() {
         ]
     "#]];
     expected.assert_debug_eq(&properties)
+}
+
+#[tokio::test]
+#[cfg_attr(msim, ignore)]
+async fn test_custom_property_check_unpublished_dependencies() {
+    let build_config = BuildConfig::new_for_testing();
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.extend([
+        "src",
+        "unit_tests",
+        "data",
+        "custom_properties_in_manifest_ensure_published_at",
+    ]);
+
+    let resolution_graph = build_config
+        .config
+        .resolution_graph_for_package(&path, &mut std::io::sink())
+        .expect("Could not build resolution graph.");
+
+    let SuiError::ModulePublishFailure { error } =
+        check_unpublished_dependencies(gather_dependencies(&resolution_graph).unpublished)
+            .err()
+            .unwrap()
+     else {
+        panic!("Expected ModulePublishFailure")
+    };
+
+    let expected = expect![[r#"
+        Package dependency "CustomPropertiesInManifestDependencyMissingPublishedAt" does not specify a published address (the Move.toml manifest for "CustomPropertiesInManifestDependencyMissingPublishedAt" does not contain a published-at field).
+        If this is intentional, you may use the --with-unpublished-dependencies flag to continue publishing these dependencies as part of your package (they won't be linked against existing packages on-chain)."#]];
+    expected.assert_eq(&error)
 }
 
 pub async fn build_and_try_publish_test_package(

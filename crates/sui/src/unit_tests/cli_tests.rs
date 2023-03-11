@@ -1,10 +1,10 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::str::FromStr;
 use std::{fmt::Write, fs::read_dir, path::PathBuf, str, thread, time::Duration};
 
 use anyhow::anyhow;
+use expect_test::expect;
 use move_package::BuildConfig;
 use serde_json::json;
 use tokio::time::sleep;
@@ -57,6 +57,7 @@ async fn test_genesis() -> Result<(), anyhow::Error> {
         write_config: None,
         force: false,
         from_config: None,
+        epoch_duration_ms: None,
     }
     .execute()
     .await?;
@@ -93,6 +94,7 @@ async fn test_genesis() -> Result<(), anyhow::Error> {
         write_config: None,
         force: false,
         from_config: None,
+        epoch_duration_ms: None,
     }
     .execute()
     .await;
@@ -185,6 +187,7 @@ async fn test_regression_6546() -> Result<(), anyhow::Error> {
 
 #[sim_test]
 async fn test_create_example_nft_command() {
+    use std::str::FromStr;
     let mut test_cluster = TestClusterBuilder::new().build().await.unwrap();
     let address = test_cluster.get_address_0();
     let context = &mut test_cluster.wallet;
@@ -550,6 +553,144 @@ async fn test_package_publish_command() -> Result<(), anyhow::Error> {
         get_parsed_object_assert_existence(obj_id, context).await;
     }
 
+    Ok(())
+}
+
+#[sim_test]
+async fn test_package_publish_command_with_unpublished_dependency_succeeds(
+) -> Result<(), anyhow::Error> {
+    let with_unpublished_dependencies = true; // Value under test, results in successful response.
+
+    let mut test_cluster = TestClusterBuilder::new().build().await?;
+    let address = test_cluster.get_address_0();
+    let context = &mut test_cluster.wallet;
+
+    let client = context.get_client().await?;
+    let object_refs = client
+        .read_api()
+        .get_objects_owned_by_address(address)
+        .await?;
+
+    let gas_obj_id = object_refs.first().unwrap().object_id;
+
+    let mut package_path = PathBuf::from(TEST_DATA_DIR);
+    package_path.push("module_publish_with_unpublished_dependency");
+    let build_config = BuildConfig::default();
+    let resp = SuiClientCommands::Publish {
+        package_path,
+        build_config,
+        gas: Some(gas_obj_id),
+        gas_budget: 20_000,
+        skip_dependency_verification: false,
+        with_unpublished_dependencies,
+    }
+    .execute(context)
+    .await?;
+
+    // Print it out to CLI/logs
+    resp.print(true);
+
+    let obj_ids = if let SuiClientCommandResult::Publish(response) = resp {
+        response
+            .effects
+            .as_ref()
+            .unwrap()
+            .created()
+            .iter()
+            .map(|refe| refe.reference.object_id)
+            .collect::<Vec<_>>()
+    } else {
+        unreachable!("Invalid response");
+    };
+
+    // Check the objects
+    for obj_id in obj_ids {
+        get_parsed_object_assert_existence(obj_id, context).await;
+    }
+
+    Ok(())
+}
+
+#[sim_test]
+async fn test_package_publish_command_with_unpublished_dependency_fails(
+) -> Result<(), anyhow::Error> {
+    let with_unpublished_dependencies = false; // Value under test, results in error response.
+
+    let mut test_cluster = TestClusterBuilder::new().build().await?;
+    let address = test_cluster.get_address_0();
+    let context = &mut test_cluster.wallet;
+
+    let client = context.get_client().await?;
+    let object_refs = client
+        .read_api()
+        .get_objects_owned_by_address(address)
+        .await?;
+
+    let gas_obj_id = object_refs.first().unwrap().object_id;
+
+    let mut package_path = PathBuf::from(TEST_DATA_DIR);
+    package_path.push("module_publish_with_unpublished_dependency");
+    let build_config = BuildConfig::default();
+    let result = SuiClientCommands::Publish {
+        package_path,
+        build_config,
+        gas: Some(gas_obj_id),
+        gas_budget: 20_000,
+        skip_dependency_verification: false,
+        with_unpublished_dependencies,
+    }
+    .execute(context)
+    .await;
+
+    let expect = expect![[r#"
+        Err(
+            ModulePublishFailure {
+                error: "Package dependency \"Unpublished\" does not specify a published address (the Move.toml manifest for \"Unpublished\" does not contain a published-at field).\nIf this is intentional, you may use the --with-unpublished-dependencies flag to continue publishing these dependencies as part of your package (they won't be linked against existing packages on-chain).",
+            },
+        )
+    "#]];
+    expect.assert_debug_eq(&result);
+    Ok(())
+}
+
+#[sim_test]
+async fn test_package_publish_command_failure_invalid() -> Result<(), anyhow::Error> {
+    let with_unpublished_dependencies = true; // Invalid packages should fail to pubilsh, even if we allow unpublished dependencies.
+
+    let mut test_cluster = TestClusterBuilder::new().build().await?;
+    let address = test_cluster.get_address_0();
+    let context = &mut test_cluster.wallet;
+
+    let client = context.get_client().await?;
+    let object_refs = client
+        .read_api()
+        .get_objects_owned_by_address(address)
+        .await?;
+
+    let gas_obj_id = object_refs.first().unwrap().object_id;
+
+    let mut package_path = PathBuf::from(TEST_DATA_DIR);
+    package_path.push("module_publish_failure_invalid");
+    let build_config = BuildConfig::default();
+    let result = SuiClientCommands::Publish {
+        package_path,
+        build_config,
+        gas: Some(gas_obj_id),
+        gas_budget: 20_000,
+        skip_dependency_verification: false,
+        with_unpublished_dependencies,
+    }
+    .execute(context)
+    .await;
+
+    let expect = expect![[r#"
+        Err(
+            ModulePublishFailure {
+                error: "Package dependency \"Invalid\" does not specify a valid published address: could not parse value \"mystery\" for published-at field.",
+            },
+        )
+    "#]];
+    expect.assert_debug_eq(&result);
     Ok(())
 }
 
@@ -1219,7 +1360,7 @@ async fn test_serialize_tx() -> Result<(), anyhow::Error> {
 }
 
 #[tokio::test]
-async fn test_delegation_with_none_amount() -> Result<(), anyhow::Error> {
+async fn test_stake_with_none_amount() -> Result<(), anyhow::Error> {
     let mut test_cluster = TestClusterBuilder::new().build().await?;
     let address = test_cluster.get_address_0();
     let context = &mut test_cluster.wallet;
@@ -1249,7 +1390,7 @@ async fn test_delegation_with_none_amount() -> Result<(), anyhow::Error> {
         "--module",
         "sui_system",
         "--function",
-        "request_add_delegation_mul_coin",
+        "request_add_stake_mul_coin",
         "--args",
         "0x5",
         &format!("[{}]", coins.first().unwrap().coin_object_id),
@@ -1268,13 +1409,13 @@ async fn test_delegation_with_none_amount() -> Result<(), anyhow::Error> {
     assert_eq!(1, stake.len());
     assert_eq!(
         coins.first().unwrap().balance,
-        stake.first().unwrap().staked_sui.principal()
+        stake.first().unwrap().stakes.first().unwrap().principal
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn test_delegation_with_u64_amount() -> Result<(), anyhow::Error> {
+async fn test_stake_with_u64_amount() -> Result<(), anyhow::Error> {
     let mut test_cluster = TestClusterBuilder::new().build().await?;
     let address = test_cluster.get_address_0();
     let context = &mut test_cluster.wallet;
@@ -1304,7 +1445,7 @@ async fn test_delegation_with_u64_amount() -> Result<(), anyhow::Error> {
         "--module",
         "sui_system",
         "--function",
-        "request_add_delegation_mul_coin",
+        "request_add_stake_mul_coin",
         "--args",
         "0x5",
         &format!("[{}]", coins.first().unwrap().coin_object_id),
@@ -1321,7 +1462,10 @@ async fn test_delegation_with_u64_amount() -> Result<(), anyhow::Error> {
         .await?;
 
     assert_eq!(1, stake.len());
-    assert_eq!(10000, stake.first().unwrap().staked_sui.principal());
+    assert_eq!(
+        10000,
+        stake.first().unwrap().stakes.first().unwrap().principal
+    );
     Ok(())
 }
 

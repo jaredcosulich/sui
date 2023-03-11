@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { SUI_TYPE_ARG } from '@mysten/sui.js';
+import { getMoveEvent, SUI_TYPE_ARG } from '@mysten/sui.js';
 import { useMemo } from 'react';
 
 import { calculateAPY } from '_app/staking/calculateAPY';
@@ -11,18 +11,14 @@ import { Text } from '_src/ui/app/shared/text';
 import { IconTooltip } from '_src/ui/app/shared/tooltip';
 import { useSystemState } from '_src/ui/app/staking/useSystemState';
 
-import type {
-    TransactionEffects,
-    MoveEvent,
-    TransactionEvents,
-} from '@mysten/sui.js';
+import type { TransactionEffects, TransactionEvents } from '@mysten/sui.js';
 
 type StakeTxnCardProps = {
     txnEffects: TransactionEffects;
     events: TransactionEvents;
 };
 
-const REQUEST_DELEGATION_EVENT = '0x2::validator_set::DelegationRequestEvent';
+const REQUEST_DELEGATION_EVENT = '0x2::validator_set::StakingRequestEvent';
 
 // TODO: moveEvents is will be changing
 // For Staked Transaction use moveEvent Field to get the validator address, delegation amount, epoch
@@ -32,21 +28,21 @@ export function StakeTxnCard({ txnEffects, events }: StakeTxnCardProps) {
 
         const event = events.find(
             (event) =>
-                'moveEvent' in event &&
-                event.moveEvent.type === REQUEST_DELEGATION_EVENT
+                event.type === 'moveEvent' &&
+                event.content.type === REQUEST_DELEGATION_EVENT
         );
         if (!event) return null;
-        const { moveEvent } = event as { moveEvent: MoveEvent };
+        const moveEvent = getMoveEvent(event);
         return moveEvent;
     }, [events]);
 
     const { data: system } = useSystemState();
 
     const validatorData = useMemo(() => {
-        if (!system || !stakingData || !stakingData.fields.validator_address)
+        if (!system || !stakingData || !stakingData.fields.validatorAddress)
             return null;
-        return system.active_validators.find(
-            (av) => av.sui_address === stakingData.fields.validator_address
+        return system.activeValidators.find(
+            (av) => av.suiAddress === stakingData.fields.validator_address
         );
     }, [stakingData, system]);
 

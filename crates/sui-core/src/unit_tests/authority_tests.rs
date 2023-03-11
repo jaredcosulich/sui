@@ -18,6 +18,7 @@ use move_binary_format::{
     CompiledModule,
 };
 use move_core_types::identifier::IdentStr;
+use move_core_types::language_storage::StructTag;
 use move_core_types::{
     account_address::AccountAddress, ident_str, identifier::Identifier, language_storage::TypeTag,
 };
@@ -33,18 +34,17 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use sui_json_rpc_types::{
-    SuiExecutionResult, SuiExecutionStatus, SuiGasCostSummary, SuiTransactionEffectsAPI,
+    SuiArgument, SuiExecutionResult, SuiExecutionStatus, SuiGasCostSummary,
+    SuiTransactionEffectsAPI, SuiTypeTag,
 };
 use sui_types::error::UserInputError;
+use sui_types::gas_coin::GasCoin;
 use sui_types::programmable_transaction_builder::ProgrammableTransactionBuilder;
 use sui_types::utils::{
     make_committee_key, mock_certified_checkpoint, to_sender_signed_transaction,
     to_sender_signed_transaction_with_multi_signers,
 };
-use sui_types::{
-    MOVE_STDLIB_ADDRESS, SUI_CLOCK_OBJECT_ID, SUI_CLOCK_OBJECT_SHARED_VERSION,
-    SUI_FRAMEWORK_OBJECT_ID, SUI_SYSTEM_STATE_OBJECT_SHARED_VERSION,
-};
+use sui_types::{SUI_CLOCK_OBJECT_ID, SUI_CLOCK_OBJECT_SHARED_VERSION, SUI_FRAMEWORK_OBJECT_ID};
 
 use crate::epoch::epoch_metrics::EpochMetrics;
 use move_core_types::parser::parse_type_tag;
@@ -55,7 +55,7 @@ use sui_types::dynamic_field::DynamicFieldType;
 use sui_types::epoch_data::EpochData;
 use sui_types::object::Data;
 use sui_types::sui_system_state::epoch_start_sui_system_state::EpochStartSystemState;
-use sui_types::sui_system_state::{SuiSystemStateWrapper, SUI_SYSTEM_STATE_TESTING_VERSION1};
+use sui_types::sui_system_state::SuiSystemStateWrapper;
 use sui_types::{
     base_types::dbg_addr,
     crypto::{get_key_pair, Signature},
@@ -74,18 +74,24 @@ pub enum TestCallArg {
 }
 
 impl TestCallArg {
-    pub async fn to_call_arg(self, state: &AuthorityState) -> CallArg {
+    pub async fn to_call_arg(
+        self,
+        builder: &mut ProgrammableTransactionBuilder,
+        state: &AuthorityState,
+    ) -> Argument {
         match self {
-            Self::Pure(value) => CallArg::Pure(value),
-            Self::Object(object_id) => {
-                CallArg::Object(Self::call_arg_from_id(object_id, state).await)
-            }
+            Self::Pure(value) => builder.input(CallArg::Pure(value)).unwrap(),
+            Self::Object(object_id) => builder
+                .input(CallArg::Object(
+                    Self::call_arg_from_id(object_id, state).await,
+                ))
+                .unwrap(),
             Self::ObjVec(vec) => {
                 let mut refs = vec![];
                 for object_id in vec {
                     refs.push(Self::call_arg_from_id(object_id, state).await)
                 }
-                CallArg::ObjVec(refs)
+                builder.make_obj_vec(refs).unwrap()
             }
         }
     }
@@ -238,6 +244,7 @@ async fn test_dry_run_transaction() {
         .await
         .unwrap();
     assert_eq!(*response.effects.status(), SuiExecutionStatus::Success);
+    let gas_usage = response.effects.gas_used();
 
     // Make sure that objects are not mutated after dry run.
     let gas_object_version = fullnode
@@ -254,6 +261,22 @@ async fn test_dry_run_transaction() {
         .unwrap()
         .version();
     assert_eq!(shared_object_version, initial_shared_object_version);
+
+    let txn_data = &transaction.data().intent_message.value;
+    let txn_data = TransactionData::new_with_gas_coins(
+        txn_data.kind().clone(),
+        txn_data.sender(),
+        vec![],
+        txn_data.gas_budget(),
+        txn_data.gas_price(),
+    );
+    let response = fullnode
+        .dry_exec_transaction(txn_data, transaction_digest)
+        .await
+        .unwrap();
+    let gas_usage_no_gas = response.effects.gas_used();
+    assert_eq!(*response.effects.status(), SuiExecutionStatus::Success);
+    assert_eq!(gas_usage, gas_usage_no_gas);
 }
 
 #[tokio::test]
@@ -287,12 +310,11 @@ async fn test_dev_inspect_object_by_bytes() {
     assert!(effects.gas_used().computation_cost > 0);
     let mut results = results.unwrap();
     assert_eq!(results.len(), 1);
-    let (idx, exec_results) = results.pop().unwrap();
+    let exec_results = results.pop().unwrap();
     let SuiExecutionResult {
         mutable_reference_outputs,
         return_values,
     } = exec_results;
-    assert_eq!(idx, 0);
     assert!(mutable_reference_outputs.is_empty());
     assert!(return_values.is_empty());
     let dev_inspect_gas_summary = effects.gas_used().clone();
@@ -358,12 +380,11 @@ async fn test_dev_inspect_object_by_bytes() {
 
     let mut results = results.unwrap();
     assert_eq!(results.len(), 1);
-    let (idx, exec_results) = results.pop().unwrap();
+    let exec_results = results.pop().unwrap();
     let SuiExecutionResult {
         mutable_reference_outputs,
         return_values,
     } = exec_results;
-    assert_eq!(idx, 0);
     assert_eq!(mutable_reference_outputs.len(), 1);
     assert!(return_values.is_empty());
     let updated_reference_bytes = &mutable_reference_outputs[0].1;
@@ -463,12 +484,11 @@ async fn test_dev_inspect_unowned_object() {
 
     let mut results = results.unwrap();
     assert_eq!(results.len(), 1);
-    let (idx, exec_results) = results.pop().unwrap();
+    let exec_results = results.pop().unwrap();
     let SuiExecutionResult {
         mutable_reference_outputs,
         return_values,
     } = exec_results;
-    assert_eq!(idx, 0);
     assert_eq!(mutable_reference_outputs.len(), 1);
     assert!(return_values.is_empty());
 }
@@ -524,22 +544,31 @@ async fn test_dev_inspect_dynamic_field() {
         init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id)]).await;
 
     // add a dynamic field to itself
-    let DevInspectResults { results, .. } = call_dev_inspect(
-        &fullnode,
-        &sender,
-        &object_basics.0,
-        "object_basics",
-        "add_ofield",
-        vec![],
-        vec![
-            TestCallArg::Pure(test_object1_bytes.clone()),
-            TestCallArg::Pure(test_object1_bytes.clone()),
+    let pt = ProgrammableTransaction {
+        inputs: vec![
+            CallArg::Pure(test_object1_bytes.clone()),
+            CallArg::Pure(test_object1_bytes.clone()),
         ],
-    )
-    .await
-    .unwrap();
+        commands: vec![Command::MoveCall(Box::new(ProgrammableMoveCall {
+            package: object_basics.0,
+            module: Identifier::new("object_basics").unwrap(),
+            function: Identifier::new("add_ofield").unwrap(),
+            type_arguments: vec![],
+            arguments: vec![Argument::Input(0), Argument::Input(1)],
+        }))],
+    };
+    let kind = TransactionKind::programmable(pt);
+    let DevInspectResults { results, .. } = fullnode
+        .dev_inspect_transaction(sender, kind, Some(1))
+        .await
+        .unwrap();
     // produces an error
-    assert!(matches!(results, Err(e) if e.contains("kind: CircularObjectOwnership")));
+    let err = results.unwrap_err();
+    assert!(
+        err.contains("kind: CircularObjectOwnership"),
+        "unexpected error: {}",
+        err
+    );
 
     // add a dynamic field to an object
     let DevInspectResults {
@@ -566,12 +595,11 @@ async fn test_dev_inspect_dynamic_field() {
     assert!(effects.deleted().is_empty());
     assert!(effects.gas_used().computation_cost > 0);
     assert_eq!(results.len(), 1);
-    let (idx, exec_results) = results.pop().unwrap();
+    let exec_results = results.pop().unwrap();
     let SuiExecutionResult {
         mutable_reference_outputs,
         return_values,
     } = exec_results;
-    assert_eq!(idx, 0);
     assert_eq!(mutable_reference_outputs.len(), 1);
     assert!(return_values.is_empty());
 }
@@ -630,12 +658,11 @@ async fn test_dev_inspect_return_values() {
     .unwrap();
     let mut results = results.unwrap();
     assert_eq!(results.len(), 1);
-    let (idx, exec_results) = results.pop().unwrap();
+    let exec_results = results.pop().unwrap();
     let SuiExecutionResult {
         mutable_reference_outputs,
         mut return_values,
     } = exec_results;
-    assert_eq!(idx, 0);
     assert_eq!(mutable_reference_outputs.len(), 1);
     assert_eq!(return_values.len(), 1);
     let (return_value_1, return_type) = return_values.pop().unwrap();
@@ -658,12 +685,11 @@ async fn test_dev_inspect_return_values() {
     .unwrap();
     let mut results = results.unwrap();
     assert_eq!(results.len(), 1);
-    let (idx, exec_results) = results.pop().unwrap();
+    let exec_results = results.pop().unwrap();
     let SuiExecutionResult {
         mutable_reference_outputs,
         mut return_values,
     } = exec_results;
-    assert_eq!(idx, 0);
     assert!(mutable_reference_outputs.is_empty());
     assert_eq!(return_values.len(), 1);
     let (return_value_1, return_type) = return_values.pop().unwrap();
@@ -686,12 +712,11 @@ async fn test_dev_inspect_return_values() {
     .unwrap();
     let mut results = results.unwrap();
     assert_eq!(results.len(), 1);
-    let (idx, exec_results) = results.pop().unwrap();
+    let exec_results = results.pop().unwrap();
     let SuiExecutionResult {
         mutable_reference_outputs,
         mut return_values,
     } = exec_results;
-    assert_eq!(idx, 0);
     assert!(mutable_reference_outputs.is_empty());
     assert_eq!(return_values.len(), 1);
     let (return_value_1, return_type) = return_values.pop().unwrap();
@@ -700,13 +725,40 @@ async fn test_dev_inspect_return_values() {
     let type_tag: TypeTag = return_type.try_into().unwrap();
     assert!(matches!(type_tag, TypeTag::U64));
 
-    // read two values from it's bytes
+    // An unused value without drop is an error normally
+    let effects = call_move_(
+        &validator,
+        Some(&fullnode),
+        &gas_object_id,
+        &sender,
+        &sender_key,
+        &object_basics.0,
+        "object_basics",
+        "wrap_object",
+        vec![],
+        vec![TestCallArg::Object(created_object_id)],
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        effects.status(),
+        &ExecutionStatus::Failure {
+            error: ExecutionFailureStatus::UnusedValueWithoutDrop {
+                result_idx: 0,
+                secondary_idx: 0,
+            },
+            command: None,
+        }
+    );
+
+    // An unused value without drop is not an error in dev inspect
     let DevInspectResults { results, .. } = call_dev_inspect(
         &fullnode,
         &sender,
         &object_basics.0,
         "object_basics",
-        "get_contents",
+        "wrap_object",
         vec![],
         vec![TestCallArg::Pure(created_object_bytes)],
     )
@@ -714,19 +766,76 @@ async fn test_dev_inspect_return_values() {
     .unwrap();
     let mut results = results.unwrap();
     assert_eq!(results.len(), 1);
-    let (idx, exec_results) = results.pop().unwrap();
+    let exec_results = results.pop().unwrap();
     let SuiExecutionResult {
         mutable_reference_outputs,
         mut return_values,
     } = exec_results;
-    assert_eq!(idx, 0);
     assert!(mutable_reference_outputs.is_empty());
-    assert_eq!(return_values.len(), 2);
-    let (return_value_2, _return_type) = return_values.pop().unwrap();
-    let (returned_id_bytes, _return_type) = return_values.pop().unwrap();
-    let returned_id: ObjectID = bcs::from_bytes(&returned_id_bytes).unwrap();
-    assert_eq!(return_value_1, return_value_2);
-    assert_eq!(created_object_id, returned_id);
+    assert_eq!(return_values.len(), 1);
+    let (_return_value, return_type) = return_values.pop().unwrap();
+    let expected_type = TypeTag::Struct(Box::new(StructTag {
+        address: object_basics.0.into(),
+        module: Identifier::new("object_basics").unwrap(),
+        name: Identifier::new("Wrapper").unwrap(),
+        type_params: vec![],
+    }));
+    let return_type: TypeTag = return_type.try_into().unwrap();
+    assert_eq!(return_type, expected_type);
+}
+
+#[tokio::test]
+async fn test_dev_inspect_gas_coin_argument() {
+    let (validator, fullnode, _object_basics) =
+        init_state_with_ids_and_object_basics_with_fullnode(vec![]).await;
+    let epoch_store = validator.epoch_store_for_testing();
+    let protocol_config = epoch_store.protocol_config();
+
+    let sender = SuiAddress::random_for_testing_only();
+    let recipient = SuiAddress::random_for_testing_only();
+    let amount = 500;
+    let pt = {
+        let mut builder = ProgrammableTransactionBuilder::new();
+        builder.pay_sui(vec![recipient], vec![amount]).unwrap();
+        builder.finish()
+    };
+    let kind = TransactionKind::programmable(pt);
+    let results = fullnode
+        .dev_inspect_transaction(sender, kind, Some(1))
+        .await
+        .unwrap()
+        .results
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    // Split results
+    let SuiExecutionResult {
+        mutable_reference_outputs,
+        return_values,
+    } = &results[0];
+    // check argument is the gas coin updated
+    assert_eq!(mutable_reference_outputs.len(), 1);
+    let (arg, arg_value, arg_type) = &mutable_reference_outputs[0];
+    assert_eq!(arg, &SuiArgument::GasCoin);
+    check_coin_value(arg_value, arg_type, protocol_config.max_tx_gas() - amount);
+
+    assert_eq!(return_values.len(), 1);
+    let (ret_value, ret_type) = &return_values[0];
+    check_coin_value(ret_value, ret_type, amount);
+
+    // Transfer results
+    let SuiExecutionResult {
+        mutable_reference_outputs,
+        return_values,
+    } = &results[1];
+    assert!(mutable_reference_outputs.is_empty());
+    assert!(return_values.is_empty());
+}
+
+fn check_coin_value(actual_value: &[u8], actual_type: &SuiTypeTag, expected_value: u64) {
+    let actual_type: TypeTag = actual_type.clone().try_into().unwrap();
+    assert_eq!(actual_type, TypeTag::Struct(Box::new(GasCoin::type_())));
+    let actual_coin: GasCoin = bcs::from_bytes(actual_value).unwrap();
+    assert_eq!(actual_coin.value(), expected_value);
 }
 
 #[tokio::test]
@@ -736,15 +845,22 @@ async fn test_dev_inspect_uses_unbound_object() {
     let (_validator, fullnode, object_basics) =
         init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id)]).await;
 
-    let kind = TransactionKind::Single(SingleTransactionKind::Call(MoveCall {
-        package: object_basics.0,
-        module: Identifier::new("object_basics").unwrap(),
-        function: Identifier::new("freeze").unwrap(),
-        type_arguments: vec![],
-        arguments: vec![CallArg::Object(ObjectArg::ImmOrOwnedObject(
-            random_object_ref(),
-        ))],
-    }));
+    let pt = {
+        let mut builder = ProgrammableTransactionBuilder::new();
+        builder
+            .move_call(
+                object_basics.0,
+                Identifier::new("object_basics").unwrap(),
+                Identifier::new("freeze").unwrap(),
+                vec![],
+                vec![CallArg::Object(ObjectArg::ImmOrOwnedObject(
+                    random_object_ref(),
+                ))],
+            )
+            .unwrap();
+        builder.finish()
+    };
+    let kind = TransactionKind::programmable(pt);
 
     let result = fullnode
         .dev_inspect_transaction(sender, kind, Some(1))
@@ -984,6 +1100,38 @@ async fn test_handle_transfer_transaction_unknown_sender() {
         .is_none());
 }
 
+#[tokio::test]
+async fn test_upgrade_module_is_feature_gated() {
+    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
+    let gas_object_id = ObjectID::random();
+    let gas_object = Object::with_id_owner_gas_for_testing(gas_object_id, sender, 10000);
+    let authority_state = init_state().await;
+    authority_state.insert_genesis_object(gas_object).await;
+
+    let pt = {
+        let mut builder = ProgrammableTransactionBuilder::new();
+        // Data doesn't matter here. We hit the feature flag before checking it.
+        let arg = builder.pure(1).unwrap();
+        builder.upgrade(arg, vec![], vec![vec![]]);
+        builder.finish()
+    };
+
+    let TransactionEffects::V1(effects) = execute_programmable_transaction(
+        &authority_state,
+        &gas_object_id,
+        &sender,
+        &sender_key,
+        pt,
+    )
+    .await
+    .unwrap();
+    let (failure_status, _) = effects.status.unwrap_err();
+    assert_eq!(
+        failure_status,
+        ExecutionFailureStatus::FeatureNotYetSupported
+    );
+}
+
 /* FIXME: This tests the submission of out of transaction certs, but modifies object sequence numbers manually
    and leaves the authority in an inconsistent state. We should re-code it in a proper way.
 
@@ -1121,10 +1269,12 @@ async fn test_handle_sponsored_transaction() {
 
     let pt = {
         let mut builder = ProgrammableTransactionBuilder::new();
-        builder.transfer_object(recipient, object.compute_object_reference());
+        builder
+            .transfer_object(recipient, object.compute_object_reference())
+            .unwrap();
         builder.finish()
     };
-    let tx_kind = TransactionKind::Single(SingleTransactionKind::ProgrammableTransaction(pt));
+    let tx_kind = TransactionKind::programmable(pt);
 
     let data = TransactionData::new_with_gas_data(
         tx_kind.clone(),
@@ -1802,7 +1952,7 @@ async fn test_transaction_expiration() {
             &authority_state.epoch_store_for_testing(),
             SupportedProtocolVersions::SYSTEM_DEFAULT,
             committee,
-            EpochStartConfiguration::new(system_state, Default::default()),
+            EpochStartConfiguration::new_v1(system_state, Default::default()),
         )
         .await
         .unwrap();
@@ -2720,15 +2870,17 @@ async fn test_authority_persist() {
         fs::create_dir(&epoch_store_path).unwrap();
         let registry = Registry::new();
         let cache_metrics = Arc::new(ResolverMetrics::new(&registry));
+        let verified_cert_cache_metrics = VerifiedCertificateCacheMetrics::new(&registry);
         let epoch_store = AuthorityPerEpochStore::new(
             name,
-            committee,
+            Arc::new(committee),
             &epoch_store_path,
             None,
             EpochMetrics::new(&registry),
             EpochStartConfiguration::new_for_testing(),
             store.clone(),
             cache_metrics,
+            verified_cert_cache_metrics,
         );
 
         let checkpoint_store_path = dir.join(format!("DB_{:?}", ObjectID::random()));
@@ -2765,7 +2917,7 @@ async fn test_authority_persist() {
 
     // Create an authority
     let store = Arc::new(
-        AuthorityStore::open_with_committee_for_testing(&path, None, &committee, &genesis)
+        AuthorityStore::open_with_committee_for_testing(&path, None, &committee, &genesis, 0)
             .await
             .unwrap(),
     );
@@ -2791,7 +2943,7 @@ async fn test_authority_persist() {
     let (genesis, authority_key) = init_state_parameters_from_rng(&mut StdRng::from_seed(seed));
     let committee = genesis.committee().unwrap();
     let store = Arc::new(
-        AuthorityStore::open_with_committee_for_testing(&path, None, &committee, &genesis)
+        AuthorityStore::open_with_committee_for_testing(&path, None, &committee, &genesis, 0)
             .await
             .unwrap(),
     );
@@ -2858,13 +3010,11 @@ async fn test_refusal_to_sign_consensus_commit_prologue() {
 
     let gas_ref = gas_object.compute_object_reference();
     let tx_data = TransactionData::new_with_dummy_gas_price(
-        TransactionKind::Single(SingleTransactionKind::ConsensusCommitPrologue(
-            ConsensusCommitPrologue {
-                epoch: 0,
-                round: 0,
-                commit_timestamp_ms: 42,
-            },
-        )),
+        TransactionKind::ConsensusCommitPrologue(ConsensusCommitPrologue {
+            epoch: 0,
+            round: 0,
+            commit_timestamp_ms: 42,
+        }),
         sender,
         gas_ref,
         MAX_GAS,
@@ -2972,7 +3122,7 @@ async fn test_genesis_sui_system_state_object() {
     let move_object = wrapper.data.try_as_move().unwrap();
     let _sui_system_state =
         bcs::from_bytes::<SuiSystemStateWrapper>(move_object.contents()).unwrap();
-    assert_eq!(move_object.type_, SuiSystemStateWrapper::type_());
+    assert!(move_object.type_().is(&SuiSystemStateWrapper::type_()));
     let sui_system_state = authority_state
         .database
         .get_sui_system_state_object()
@@ -2983,8 +3133,13 @@ async fn test_genesis_sui_system_state_object() {
     );
 }
 
+#[cfg(msim)]
 #[sim_test]
 async fn test_sui_system_state_nop_upgrade() {
+    use sui_adapter::programmable_transactions;
+    use sui_types::sui_system_state::SUI_SYSTEM_STATE_TESTING_VERSION1;
+    use sui_types::{MOVE_STDLIB_ADDRESS, SUI_SYSTEM_STATE_OBJECT_SHARED_VERSION};
+
     let authority_state = init_state().await;
 
     let protocol_config = ProtocolConfig::get_for_version(ProtocolVersion::MIN);
@@ -3017,31 +3172,42 @@ async fn test_sui_system_state_nop_upgrade() {
     let new_protocol_version = ProtocolVersion::MIN.as_u64() + 1;
     let new_system_state_version = SUI_SYSTEM_STATE_TESTING_VERSION1;
 
-    adapter::execute::<execution_mode::Normal, _, _>(
+    let pt = {
+        let mut builder = ProgrammableTransactionBuilder::new();
+        builder
+            .move_call(
+                SUI_FRAMEWORK_ADDRESS.into(),
+                ident_str!("sui_system").to_owned(),
+                ident_str!("advance_epoch").to_owned(),
+                vec![],
+                vec![
+                    system_object_arg,
+                    CallArg::Pure(bcs::to_bytes(&1u64).unwrap()),
+                    CallArg::Pure(bcs::to_bytes(&new_protocol_version).unwrap()),
+                    CallArg::Pure(bcs::to_bytes(&0u64).unwrap()),
+                    CallArg::Pure(bcs::to_bytes(&0u64).unwrap()),
+                    CallArg::Pure(bcs::to_bytes(&0u64).unwrap()),
+                    CallArg::Pure(bcs::to_bytes(&0u64).unwrap()),
+                    CallArg::Pure(bcs::to_bytes(&0u64).unwrap()),
+                    CallArg::Pure(bcs::to_bytes(&0u64).unwrap()),
+                    CallArg::Pure(bcs::to_bytes(&new_system_state_version).unwrap()), // Upgrade sui system state, set new version to 1.
+                ],
+            )
+            .unwrap();
+        builder.finish()
+    };
+    programmable_transactions::execution::execute::<_, _, execution_mode::Normal>(
+        &protocol_config,
         &move_vm,
         &mut temporary_store,
-        ModuleId::new(SUI_FRAMEWORK_ADDRESS, ident_str!("sui_system").to_owned()),
-        &ident_str!("advance_epoch").to_owned(),
-        vec![],
-        vec![
-            system_object_arg,
-            CallArg::Pure(bcs::to_bytes(&1u64).unwrap()),
-            CallArg::Pure(bcs::to_bytes(&new_protocol_version).unwrap()),
-            CallArg::Pure(bcs::to_bytes(&0u64).unwrap()),
-            CallArg::Pure(bcs::to_bytes(&0u64).unwrap()),
-            CallArg::Pure(bcs::to_bytes(&0u64).unwrap()),
-            CallArg::Pure(bcs::to_bytes(&0u64).unwrap()),
-            CallArg::Pure(bcs::to_bytes(&0u64).unwrap()),
-            CallArg::Pure(bcs::to_bytes(&0u64).unwrap()),
-            CallArg::Pure(bcs::to_bytes(&new_system_state_version).unwrap()), // Upgrade sui system state, set new version to 1.
-        ],
-        SuiGasStatus::new_unmetered().create_move_gas_status(),
         &mut TxContext::new(
             &SuiAddress::default(),
             &TransactionDigest::genesis(),
             &EpochData::new(0, 0, CheckpointDigest::default()),
         ),
-        &protocol_config,
+        &mut SuiGasStatus::new_unmetered(),
+        None,
+        pt,
     )
     .unwrap();
     let inner = temporary_store.into_inner();
@@ -3050,7 +3216,8 @@ async fn test_sui_system_state_nop_upgrade() {
         inner.get_sui_system_state_wrapper_object().unwrap().version,
         new_system_state_version
     );
-    inner.get_sui_system_state_object().unwrap();
+    let inner_state = inner.get_sui_system_state_object().unwrap();
+    assert_eq!(inner_state.version(), new_system_state_version);
 }
 
 #[tokio::test]
@@ -4237,21 +4404,24 @@ pub async fn call_move_(
 ) -> SuiResult<TransactionEffects> {
     let gas_object = authority.get_object(gas_object_id).await.unwrap();
     let gas_object_ref = gas_object.unwrap().compute_object_reference();
+    let mut builder = ProgrammableTransactionBuilder::new();
     let mut args = vec![];
     for arg in test_args.into_iter() {
-        args.push(arg.to_call_arg(authority).await);
+        args.push(arg.to_call_arg(&mut builder, authority).await);
     }
-    let data = TransactionData::new_move_call_with_dummy_gas_price(
-        *sender,
+    builder.command(Command::move_call(
         *package,
         Identifier::new(module).unwrap(),
         Identifier::new(function).unwrap(),
         type_args,
-        gas_object_ref,
         args,
+    ));
+    let data = TransactionData::new_programmable_with_dummy_gas_price(
+        *sender,
+        vec![gas_object_ref],
+        builder.finish(),
         MAX_GAS,
-    )
-    .unwrap();
+    );
 
     let transaction = to_sender_signed_transaction(data, sender_key);
     let signed_effects =
@@ -4326,22 +4496,25 @@ pub async fn call_move_with_gas_coins(
         let gas_ref = gas_object.unwrap().compute_object_reference();
         gas_object_refs.push(gas_ref);
     }
+    let mut builder = ProgrammableTransactionBuilder::new();
     let mut args = vec![];
     for arg in test_args.into_iter() {
-        args.push(arg.to_call_arg(authority).await);
+        args.push(arg.to_call_arg(&mut builder, authority).await);
     }
-    let data = TransactionData::new_move_call_with_gas_coins(
-        *sender,
+    builder.command(Command::move_call(
         *package,
         Identifier::new(module).unwrap(),
         Identifier::new(function).unwrap(),
         type_args,
-        gas_object_refs,
         args,
+    ));
+    let data = TransactionData::new_programmable(
+        *sender,
+        gas_object_refs,
+        builder.finish(),
         gas_budget,
         DUMMY_GAS_PRICE,
-    )
-    .unwrap();
+    );
 
     let transaction = to_sender_signed_transaction(data, sender_key);
     let signed_effects =
@@ -4460,18 +4633,20 @@ pub async fn call_dev_inspect(
     type_arguments: Vec<TypeTag>,
     test_args: Vec<TestCallArg>,
 ) -> Result<DevInspectResults, anyhow::Error> {
+    let mut builder = ProgrammableTransactionBuilder::new();
     let mut arguments = Vec::with_capacity(test_args.len());
     for a in test_args {
-        arguments.push(a.to_call_arg(authority).await)
+        arguments.push(a.to_call_arg(&mut builder, authority).await)
     }
 
-    let kind = TransactionKind::Single(SingleTransactionKind::Call(MoveCall {
-        package: *package,
-        module: Identifier::new(module).unwrap(),
-        function: Identifier::new(function).unwrap(),
+    builder.command(Command::move_call(
+        *package,
+        Identifier::new(module).unwrap(),
+        Identifier::new(function).unwrap(),
         type_arguments,
         arguments,
-    }));
+    ));
+    let kind = TransactionKind::programmable(builder.finish());
     authority
         .dev_inspect_transaction(*sender, kind, Some(1))
         .await
@@ -4769,21 +4944,23 @@ async fn test_tallying_rule_score_updates() {
         .build();
     let genesis = network_config.genesis;
     let store = Arc::new(
-        AuthorityStore::open_with_committee_for_testing(&path, None, &committee, &genesis)
+        AuthorityStore::open_with_committee_for_testing(&path, None, &committee, &genesis, 0)
             .await
             .unwrap(),
     );
 
     let cache_metrics = Arc::new(ResolverMetrics::new(&registry));
+    let verified_cert_cache_metrics = VerifiedCertificateCacheMetrics::new(&registry);
     let epoch_store = AuthorityPerEpochStore::new(
         auth_0_name,
-        committee.clone(),
+        Arc::new(committee.clone()),
         &path,
         None,
         metrics.clone(),
         EpochStartConfiguration::new_for_testing(),
         store,
         cache_metrics,
+        verified_cert_cache_metrics,
     );
 
     let get_stored_seq_num_and_counter = |auth_name: &AuthorityName| {
@@ -5079,48 +5256,30 @@ async fn test_gas_smashing() {
     }
 
     // run an object creation transaction with the given amount of gas and coins
-    async fn run_and_check_ok(reference_gas_used: u64, coin_num: u64, budget: u64) -> u64 {
+    async fn run_and_check(
+        reference_gas_used: u64,
+        coin_num: u64,
+        budget: u64,
+        success: bool,
+    ) -> u64 {
         let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
         let gas_coins = make_gas_coins(sender, reference_gas_used, coin_num);
         let gas_coin_ids: Vec<_> = gas_coins.iter().map(|obj| obj.id()).collect();
         let (state, effects) = create_obj(sender, sender_key, gas_coins, budget).await;
-        // transaction is good
-        assert!(effects.status().is_ok());
-        // gas object in effects is first coin in vector of coins
-        assert_eq!(gas_coin_ids[0], effects.gas_object().0 .0);
-        // object is created and gas at position 0 mutated
-        assert_eq!((effects.created().len(), effects.mutated().len()), (1, 1));
-        // extra coin are deleted
-        assert_eq!(effects.deleted().len() as u64, coin_num - 1);
-        for gas_coin_id in &gas_coin_ids[1..] {
-            assert!(effects
-                .deleted()
-                .iter()
-                .any(|deleted| deleted.0 == *gas_coin_id));
+        // check transaction
+        if success {
+            assert!(effects.status().is_ok());
+        } else {
+            assert!(effects.status().is_err());
         }
-        // balance on first coin is correct
-        let balance = sui_types::gas::get_gas_balance(
-            &state.get_object(&gas_coin_ids[0]).await.unwrap().unwrap(),
-        )
-        .unwrap();
-        let gas_used = effects.gas_cost_summary().gas_used();
-        assert!(reference_gas_used > balance);
-        assert_eq!(reference_gas_used, balance + gas_used);
-        gas_used
-    }
-
-    // run an object creation transaction with the given amount of gas and coins, failure case
-    async fn run_and_check_err(reference_gas_used: u64, coin_num: u64, budget: u64) -> u64 {
-        let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
-        let gas_coins = make_gas_coins(sender, reference_gas_used, coin_num);
-        let gas_coin_ids: Vec<_> = gas_coins.iter().map(|obj| obj.id()).collect();
-        let (state, effects) = create_obj(sender, sender_key, gas_coins, budget).await;
-        // transaction is good
-        assert!(effects.status().is_err());
         // gas object in effects is first coin in vector of coins
         assert_eq!(gas_coin_ids[0], effects.gas_object().0 .0);
-        // object is created and gas at position 0 mutated
-        assert_eq!((effects.created().len(), effects.mutated().len()), (0, 1));
+        // object is created on success and gas at position 0 mutated
+        let created = usize::from(success);
+        assert_eq!(
+            (effects.created().len(), effects.mutated().len()),
+            (created, 1)
+        );
         // extra coin are deleted
         assert_eq!(effects.deleted().len() as u64, coin_num - 1);
         for gas_coin_id in &gas_coin_ids[1..] {
@@ -5142,17 +5301,17 @@ async fn test_gas_smashing() {
 
     // 1. get the cost of the transaction so we can play with multiple gas coins
     // 100,000 should be enough money for that transaction.
-    let gas_used = run_and_check_ok(100_000, 1, 100_000).await;
+    let gas_used = run_and_check(100_000, 1, 100_000, true).await;
 
     // add something to the gas used to account for multiple gas coins being charged for
     let reference_gas_used = gas_used + 1_000;
-    let three_coin_gas = run_and_check_ok(reference_gas_used, 3, reference_gas_used).await;
-    run_and_check_ok(reference_gas_used, 10, reference_gas_used - 100).await;
+    let three_coin_gas = run_and_check(reference_gas_used, 3, reference_gas_used, true).await;
+    run_and_check(reference_gas_used, 10, reference_gas_used - 100, true).await;
 
     // make less then required to succeed
     let reference_gas_used = gas_used - 10;
-    run_and_check_err(reference_gas_used, 2, reference_gas_used - 10).await;
-    run_and_check_err(reference_gas_used, 30, reference_gas_used).await;
+    run_and_check(reference_gas_used, 2, reference_gas_used - 10, false).await;
+    run_and_check(reference_gas_used, 30, reference_gas_used, false).await;
     // use a small amount less than what 3 coins above reported (with success)
-    run_and_check_err(three_coin_gas, 3, three_coin_gas - 1).await;
+    run_and_check(three_coin_gas, 3, three_coin_gas - 1, false).await;
 }

@@ -1,24 +1,31 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::base_types::{AuthorityName, ObjectID, SuiAddress};
+use crate::committee::{Committee, CommitteeWithNetworkMetadata, NetworkMetadata};
+use crate::sui_serde::AsMultiaddr;
+use fastcrypto::encoding::Base58;
 use fastcrypto::traits::ToFromBytes;
 use multiaddr::Multiaddr;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use std::collections::BTreeMap;
 
-use crate::base_types::{AuthorityName, ObjectID, SuiAddress};
-use crate::committee::{Committee, CommitteeWithNetworkMetadata, NetworkMetadata};
+use crate::id::ID;
 
 /// This is the JSON-RPC type for the SUI system state object.
 /// It flattens all fields to make them top-level fields such that it as minimum
 /// dependencies to the internal data structures of the SUI system state type.
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct SuiSystemStateSummary {
     /// The current epoch ID, starting from 0.
     pub epoch: u64,
     /// The current protocol version, starting from 1.
     pub protocol_version: u64,
+    /// The current version of the system state data structure type.
+    pub system_state_version: u64,
     /// The storage fund balance.
     pub storage_fund: u64,
     /// The reference gas price for the current epoch.
@@ -31,11 +38,6 @@ pub struct SuiSystemStateSummary {
     pub epoch_start_timestamp_ms: u64,
 
     // System parameters
-    /// Lower-bound on the amount of stake required to become a validator.
-    pub min_validator_stake: u64,
-    /// Maximum number of active validators at any moment.
-    /// We do not allow the number of validators in any epoch to go above this.
-    pub max_validator_count: u64,
     /// The starting epoch in which various on-chain governance features take effect.
     pub governance_start_epoch: u64,
 
@@ -98,34 +100,69 @@ impl SuiSystemStateSummary {
     }
 }
 
-/// This is the JSON-RPC type for the SUI validator. It flattens all inner strucutures
+/// This is the JSON-RPC type for the SUI validator. It flattens all inner structures
 /// to top-level fields so that they are decoupled from the internal definitions.
+#[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct SuiValidatorSummary {
     // Metadata
     pub sui_address: SuiAddress,
+    #[schemars(with = "Base58")]
+    #[serde_as(as = "Base58")]
     pub protocol_pubkey_bytes: Vec<u8>,
+    #[schemars(with = "Base58")]
+    #[serde_as(as = "Base58")]
     pub network_pubkey_bytes: Vec<u8>,
+    #[schemars(with = "Base58")]
+    #[serde_as(as = "Base58")]
     pub worker_pubkey_bytes: Vec<u8>,
+    #[schemars(with = "Base58")]
+    #[serde_as(as = "Base58")]
     pub proof_of_possession_bytes: Vec<u8>,
     pub name: String,
     pub description: String,
     pub image_url: String,
     pub project_url: String,
+    #[schemars(with = "String")]
+    #[serde_as(as = "AsMultiaddr")]
     pub net_address: Vec<u8>,
+    #[schemars(with = "String")]
+    #[serde_as(as = "AsMultiaddr")]
     pub p2p_address: Vec<u8>,
+    #[schemars(with = "String")]
+    #[serde_as(as = "AsMultiaddr")]
     pub primary_address: Vec<u8>,
+    #[schemars(with = "String")]
+    #[serde_as(as = "AsMultiaddr")]
     pub worker_address: Vec<u8>,
+    #[schemars(with = "Option<Base58>")]
+    #[serde_as(as = "Option<Base58>")]
     pub next_epoch_protocol_pubkey_bytes: Option<Vec<u8>>,
+    #[schemars(with = "Option<Base58>")]
+    #[serde_as(as = "Option<Base58>")]
     pub next_epoch_proof_of_possession: Option<Vec<u8>>,
+    #[schemars(with = "Option<Base58>")]
+    #[serde_as(as = "Option<Base58>")]
     pub next_epoch_network_pubkey_bytes: Option<Vec<u8>>,
+    #[schemars(with = "Option<Base58>")]
+    #[serde_as(as = "Option<Base58>")]
     pub next_epoch_worker_pubkey_bytes: Option<Vec<u8>>,
+    #[schemars(with = "Option<String>")]
+    #[serde_as(as = "Option<AsMultiaddr>")]
     pub next_epoch_net_address: Option<Vec<u8>>,
+    #[schemars(with = "Option<String>")]
+    #[serde_as(as = "Option<AsMultiaddr>")]
     pub next_epoch_p2p_address: Option<Vec<u8>>,
+    #[schemars(with = "Option<String>")]
+    #[serde_as(as = "Option<AsMultiaddr>")]
     pub next_epoch_primary_address: Option<Vec<u8>>,
+    #[schemars(with = "Option<String>")]
+    #[serde_as(as = "Option<AsMultiaddr>")]
     pub next_epoch_worker_address: Option<Vec<u8>>,
 
     pub voting_power: u64,
+    pub operation_cap_id: ID,
     pub gas_price: u64,
     pub commission_rate: u64,
     pub next_epoch_stake: u64,
@@ -141,13 +178,13 @@ pub struct SuiValidatorSummary {
     pub staking_pool_deactivation_epoch: Option<u64>,
     /// The total number of SUI tokens in this pool.
     pub staking_pool_sui_balance: u64,
-    /// The epoch delegation rewards will be added here at the end of each epoch.
+    /// The epoch stake rewards will be added here at the end of each epoch.
     pub rewards_pool: u64,
     /// Total number of pool tokens issued by the pool.
     pub pool_token_balance: u64,
-    /// Pending delegation amount for this epoch.
-    pub pending_delegation: u64,
-    /// Pending delegation withdrawn during the current epoch, emptied at epoch boundaries.
+    /// Pending stake amount for this epoch.
+    pub pending_stake: u64,
+    /// Pending stake withdrawn during the current epoch, emptied at epoch boundaries.
     pub pending_total_sui_withdraw: u64,
     /// Pending pool token withdrawn during the current epoch, emptied at epoch boundaries.
     pub pending_pool_token_withdraw: u64,

@@ -24,18 +24,19 @@ use sui_json_rpc_types::{
 };
 use sui_open_rpc::ExamplePairing;
 use sui_types::base_types::{
-    ObjectDigest, ObjectID, ObjectType, SequenceNumber, SuiAddress, TransactionDigest,
+    MoveObjectType, ObjectDigest, ObjectID, ObjectType, SequenceNumber, SuiAddress,
+    TransactionDigest,
 };
 use sui_types::crypto::{get_key_pair_from_rng, AccountKeyPair};
 use sui_types::digests::TransactionEventsDigest;
 use sui_types::event::EventID;
 use sui_types::gas_coin::GasCoin;
 use sui_types::messages::{
-    CallArg, ExecuteTransactionRequestType, MoveCall, SingleTransactionKind, TransactionData,
-    TransactionKind, TransferObject,
+    CallArg, ExecuteTransactionRequestType, TransactionData, TransactionKind,
 };
 use sui_types::messages_checkpoint::CheckpointDigest;
 use sui_types::object::Owner;
+use sui_types::programmable_transaction_builder::ProgrammableTransactionBuilder;
 use sui_types::query::EventQuery;
 use sui_types::query::TransactionQuery;
 use sui_types::signature::GenericSignature;
@@ -78,7 +79,6 @@ impl RpcExampleProvider {
             self.get_transactions(),
             self.get_events(),
             self.execute_transaction_example(),
-            self.submit_transaction_example(),
             self.get_checkpoint_example(),
         ]
         .into_iter()
@@ -110,28 +110,35 @@ impl RpcExampleProvider {
             }),
         ];
 
-        let data = TransactionData::new_with_dummy_gas_price(
-            TransactionKind::Batch(vec![
-                SingleTransactionKind::Call(MoveCall {
-                    package: SUI_FRAMEWORK_OBJECT_ID,
-                    module: Identifier::from_str("devnet_nft").unwrap(),
-                    function: Identifier::from_str("mint").unwrap(),
-                    type_arguments: vec![],
-                    arguments: vec![
+        let pt = {
+            let mut builder = ProgrammableTransactionBuilder::new();
+            builder
+                .move_call(
+                    SUI_FRAMEWORK_OBJECT_ID,
+                    Identifier::from_str("devnet_nft").unwrap(),
+                    Identifier::from_str("mint").unwrap(),
+                    vec![],
+                    vec![
                         CallArg::Pure(EXAMPLE_NFT_NAME.as_bytes().to_vec()),
                         CallArg::Pure(EXAMPLE_NFT_DESCRIPTION.as_bytes().to_vec()),
                         CallArg::Pure(EXAMPLE_NFT_URL.as_bytes().to_vec()),
                     ],
-                }),
-                SingleTransactionKind::TransferObject(TransferObject {
+                )
+                .unwrap();
+            builder
+                .transfer_object(
                     recipient,
-                    object_ref: (
+                    (
                         object_id,
                         SequenceNumber::from_u64(1),
                         ObjectDigest::new(self.rng.gen()),
                     ),
-                }),
-            ]),
+                )
+                .unwrap();
+            builder.finish()
+        };
+        let data = TransactionData::new_with_dummy_gas_price(
+            TransactionKind::programmable(pt),
             signer,
             (
                 gas_id,
@@ -159,14 +166,14 @@ impl RpcExampleProvider {
         )
     }
 
-    fn submit_transaction_example(&mut self) -> Examples {
+    fn execute_transaction_example(&mut self) -> Examples {
         let (data, signatures, _, _, result, _) = self.get_transfer_data_response();
         let tx_bytes = TransactionBytes::from_data(data).unwrap();
 
         Examples::new(
-            "sui_submitTransaction",
+            "sui_executeTransaction",
             vec![ExamplePairing::new(
-                "Execute an transaction with serialized signature",
+                "Execute an transaction with serialized signatures",
                 vec![
                     ("tx_bytes", json!(tx_bytes.tx_bytes)),
                     (
@@ -176,27 +183,6 @@ impl RpcExampleProvider {
                             .map(|sig| sig.encode_base64())
                             .collect::<Vec<_>>()),
                     ),
-                    (
-                        "request_type",
-                        json!(ExecuteTransactionRequestType::WaitForLocalExecution),
-                    ),
-                ],
-                json!(result),
-            )],
-        )
-    }
-
-    fn execute_transaction_example(&mut self) -> Examples {
-        let (data, signatures, _, _, result, _) = self.get_transfer_data_response();
-        let tx_bytes = TransactionBytes::from_data(data).unwrap();
-
-        Examples::new(
-            "sui_executeTransaction",
-            vec![ExamplePairing::new(
-                "Execute an transaction with serialized signature",
-                vec![
-                    ("tx_bytes", json!(tx_bytes.tx_bytes)),
-                    ("signature", json!(signatures[0].encode_base64())),
                     (
                         "request_type",
                         json!(ExecuteTransactionRequestType::WaitForLocalExecution),
@@ -228,7 +214,7 @@ impl RpcExampleProvider {
             object_id,
             version: SequenceNumber::from_u64(1),
             digest: ObjectDigest::new(self.rng.gen()),
-            type_: Some(ObjectType::Struct(GasCoin::type_())),
+            type_: Some(ObjectType::Struct(MoveObjectType::GasCoin)),
             bcs: None,
             display: None,
         });
@@ -267,7 +253,7 @@ impl RpcExampleProvider {
             object_id,
             version: SequenceNumber::from_u64(4),
             digest: ObjectDigest::new(self.rng.gen()),
-            type_: Some(ObjectType::Struct(GasCoin::type_())),
+            type_: Some(ObjectType::Struct(MoveObjectType::GasCoin)),
             bcs: None,
             display: None,
         });
@@ -317,7 +303,7 @@ impl RpcExampleProvider {
                 object_id: ObjectID::new(self.rng.gen()),
                 version: Default::default(),
                 digest: ObjectDigest::new(self.rng.gen()),
-                type_: ObjectType::Struct(GasCoin::type_()).to_string(),
+                type_: ObjectType::Struct(MoveObjectType::GasCoin).to_string(),
                 owner: Owner::AddressOwner(owner),
                 previous_transaction: TransactionDigest::new(self.rng.gen()),
             })
@@ -367,9 +353,15 @@ impl RpcExampleProvider {
 
     fn get_transactions(&mut self) -> Examples {
         let mut data = self.get_transaction_digests(5..9);
-        let next_cursor = data.pop();
+        let has_next_page = data.len() > (9 - 5);
+        data.truncate(9 - 5);
+        let next_cursor = data.last().cloned();
 
-        let result = TransactionsPage { data, next_cursor };
+        let result = TransactionsPage {
+            data,
+            next_cursor,
+            has_next_page,
+        };
         Examples::new(
             "sui_getTransactions",
             vec![ExamplePairing::new(
@@ -502,6 +494,7 @@ impl RpcExampleProvider {
         let page = EventPage {
             data: events.clone(),
             next_cursor: Some((tx_dig, 5).into()),
+            has_next_page: false,
         };
         Examples::new(
             "sui_getEvents",

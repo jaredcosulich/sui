@@ -4,7 +4,7 @@
 use crate::errors::IndexerError;
 use crate::metrics::IndexerCheckpointHandlerMetrics;
 use crate::models::checkpoints::Checkpoint;
-use crate::models::events::Event;
+use crate::models::events::compose_event;
 use crate::models::move_calls::MoveCall;
 use crate::models::objects::{DeletedObject, Object, ObjectStatus};
 use crate::models::packages::Package;
@@ -14,15 +14,14 @@ use crate::store::{
     CheckpointData, IndexerStore, TemporaryCheckpointStore, TemporaryEpochStore,
     TransactionObjectChanges,
 };
-use chrono::NaiveDateTime;
 use futures::future::join_all;
 use futures::FutureExt;
 use mysten_metrics::spawn_monitored_task;
 use prometheus::Registry;
 use std::collections::BTreeMap;
 use sui_json_rpc_types::{
-    OwnedObjectRef, SuiObjectData, SuiObjectDataOptions, SuiRawData, SuiTransactionDataAPI,
-    SuiTransactionEffectsAPI, SuiTransactionKind, SuiTransactionResponse,
+    OwnedObjectRef, SuiCommand, SuiObjectData, SuiObjectDataOptions, SuiRawData,
+    SuiTransactionDataAPI, SuiTransactionEffectsAPI, SuiTransactionKind, SuiTransactionResponse,
     SuiTransactionResponseOptions,
 };
 use sui_sdk::error::Error;
@@ -219,33 +218,15 @@ where
         let events = transactions
             .iter()
             .flat_map(|tx| {
-                let mut event_sequence = 0;
                 tx.events
                     .as_ref()
                     .expect("Events can only be None if there's an error in fetching or converting events")
                     .data
                     .iter()
-                    .map(move |event| {
-                        // TODO: we should rethink how we store the raw event in DB
-                        let event_content = serde_json::to_string(event).map_err(|err| {
-                            IndexerError::InsertableParsingError(format!(
-                                "Failed converting event to JSON with error: {:?}",
-                                err
-                            ))
-                        })?;
-                        let event = Event {
-                            id: None,
-                            transaction_digest: tx.digest.to_string(),
-                            event_sequence,
-                            event_time: tx
-                                .timestamp_ms
-                                .and_then(|t| NaiveDateTime::from_timestamp_millis(t as i64)),
-                            event_type: event.get_event_type(),
-                            event_content,
-                        };
-                        event_sequence += 1;
-                        Ok::<_, IndexerError>(event)
-                    })
+                    .enumerate()
+                    .filter_map(
+                        move |(seq, event)| compose_event(event, tx.digest.to_string(), seq, tx.timestamp_ms.map(|t| t as i64))
+                    )
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -310,42 +291,49 @@ where
 
         let move_calls: Vec<MoveCall> = transactions
             .iter()
-            .flat_map(|t| {
-                t.transaction
+            .map(|t| {
+                let tx = t
+                    .transaction
                     .as_ref()
                     .expect("transaction should not be empty")
                     .data
-                    .transactions()
-                    .iter()
-                    .map(move |tx| {
-                        (
-                            tx.clone(),
-                            t.digest,
-                            checkpoint.sequence_number,
-                            checkpoint.epoch,
-                            t.transaction
-                                .as_ref()
-                                .expect("transaction should not be empty")
-                                .data
-                                .sender(),
-                        )
-                    })
+                    .transaction();
+                (
+                    tx.clone(),
+                    t.digest,
+                    checkpoint.sequence_number,
+                    checkpoint.epoch,
+                    t.transaction
+                        .as_ref()
+                        .expect("transaction should not be empty")
+                        .data
+                        .sender(),
+                )
             })
             .filter_map(
                 |(tx_kind, txn_digest, checkpoint_seq, epoch, sender)| match tx_kind {
-                    SuiTransactionKind::Call(sui_move_call) => Some(MoveCall {
-                        id: None,
-                        transaction_digest: txn_digest.to_string(),
-                        checkpoint_sequence_number: checkpoint_seq as i64,
-                        epoch: epoch as i64,
-                        sender: sender.to_string(),
-                        move_package: sui_move_call.package.to_string(),
-                        move_module: sui_move_call.module,
-                        move_function: sui_move_call.function,
-                    }),
+                    SuiTransactionKind::ProgrammableTransaction(pt) => Some(
+                        pt.commands
+                            .into_iter()
+                            .filter_map(move |command| match command {
+                                SuiCommand::MoveCall(m) => Some(MoveCall {
+                                    id: None,
+                                    transaction_digest: txn_digest.to_string(),
+                                    checkpoint_sequence_number: checkpoint_seq as i64,
+                                    epoch: epoch as i64,
+                                    sender: sender.to_string(),
+                                    move_package: m.package.to_string(),
+                                    move_module: m.module,
+                                    move_function: m.function,
+                                }),
+                                _ => None,
+                            }),
+                    ),
+
                     _ => None,
                 },
             )
+            .flatten()
             .collect();
 
         let recipients: Vec<Recipient> = transactions

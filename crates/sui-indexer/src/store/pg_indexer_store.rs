@@ -4,28 +4,40 @@
 use crate::errors::IndexerError;
 use crate::models::checkpoints::Checkpoint;
 use crate::models::error_logs::commit_error_logs;
+use crate::models::events::Event;
+use crate::models::objects::Object;
 use crate::models::transactions::Transaction;
-use crate::schema::addresses::account_address;
-use crate::schema::checkpoints::dsl::checkpoints as checkpoints_table;
-use crate::schema::checkpoints::{checkpoint_digest, sequence_number};
-use crate::schema::move_calls::dsl as move_calls_dsl;
-use crate::schema::recipients::dsl as recipients_dsl;
-use crate::schema::transactions::{dsl, transaction_digest};
-use crate::schema::{addresses, events, move_calls, objects, packages, recipients, transactions};
+
+use crate::schema::{
+    addresses, checkpoints, checkpoints::dsl as checkpoints_dsl, events, move_calls,
+    move_calls::dsl as move_calls_dsl, objects, objects::dsl as objects_dsl, objects_history,
+    packages, recipients, recipients::dsl as recipients_dsl, transactions,
+    transactions::dsl as transactions_dsl,
+};
 use crate::store::indexer_store::TemporaryCheckpointStore;
+use crate::store::module_resolver::IndexerModuleResolver;
 use crate::store::{IndexerStore, TemporaryEpochStore};
 use crate::{get_pg_pool_connection, PgConnectionPool};
 use async_trait::async_trait;
 use diesel::dsl::{count, max};
 use diesel::sql_types::VarChar;
 use diesel::upsert::excluded;
-use diesel::QueryableByName;
 use diesel::{ExpressionMethods, PgArrayExpressionMethods};
+use diesel::{OptionalExtension, QueryableByName};
 use diesel::{QueryDsl, RunQueryDsl};
+use move_bytecode_utils::module_cache::SyncModuleCache;
 use std::collections::BTreeMap;
-use sui_json_rpc_types::CheckpointId;
+use std::sync::Arc;
+use sui_json_rpc_types::{CheckpointId, EventPage, SuiEventEnvelope};
+use sui_types::base_types::{ObjectID, SequenceNumber};
 use sui_types::committee::EpochId;
+use sui_types::object::ObjectRead;
 use tracing::{error, info};
+
+use sui_types::event::EventID;
+use sui_types::query::EventQuery;
+
+const MAX_EVENT_PAGE_SIZE: usize = 1000;
 
 const GET_PARTITION_SQL: &str = r#"
 SELECT parent.relname                           AS table_name,
@@ -43,13 +55,16 @@ GROUP BY table_name;
 pub struct PgIndexerStore {
     cp: PgConnectionPool,
     partition_manager: PartitionManager,
+    pub module_cache: Arc<SyncModuleCache<IndexerModuleResolver>>,
 }
 
 impl PgIndexerStore {
     pub fn new(cp: PgConnectionPool) -> Self {
+        let module_cache = Arc::new(SyncModuleCache::new(IndexerModuleResolver::new(cp.clone())));
         PgIndexerStore {
             cp: cp.clone(),
             partition_manager: PartitionManager::new(cp).unwrap(),
+            module_cache,
         }
     }
 }
@@ -62,8 +77,8 @@ impl IndexerStore for PgIndexerStore {
             .build_transaction()
             .read_only()
             .run(|conn| {
-                checkpoints_table
-                    .select(max(sequence_number))
+                checkpoints_dsl::checkpoints
+                    .select(max(checkpoints::sequence_number))
                     .first::<Option<i64>>(conn)
                     // -1 to differentiate between no checkpoints and the first checkpoint
                     .map(|o| o.unwrap_or(-1))
@@ -82,12 +97,12 @@ impl IndexerStore for PgIndexerStore {
             .build_transaction()
             .read_only()
             .run(|conn| match id {
-                CheckpointId::SequenceNumber(seq) => checkpoints_table
-                    .filter(sequence_number.eq(seq as i64))
+                CheckpointId::SequenceNumber(seq) => checkpoints_dsl::checkpoints
+                    .filter(checkpoints::sequence_number.eq(seq as i64))
                     .limit(1)
                     .first::<Checkpoint>(conn),
-                CheckpointId::Digest(digest) => checkpoints_table
-                    .filter(checkpoint_digest.eq(digest.base58_encode()))
+                CheckpointId::Digest(digest) => checkpoints_dsl::checkpoints
+                    .filter(checkpoints::checkpoint_digest.eq(digest.base58_encode()))
                     .limit(1)
                     .first::<Checkpoint>(conn),
             })
@@ -99,12 +114,135 @@ impl IndexerStore for PgIndexerStore {
             })
     }
 
+    fn get_event(&self, id: EventID) -> Result<Event, IndexerError> {
+        let mut pg_pool_conn = get_pg_pool_connection(&self.cp)?;
+        pg_pool_conn
+            .build_transaction()
+            .read_only()
+            .run(|conn| {
+                events::table
+                    .filter(events::dsl::transaction_digest.eq(id.tx_digest.base58_encode()))
+                    .filter(events::dsl::event_sequence.eq(id.event_seq))
+                    .first::<Event>(conn)
+            })
+            .map_err(|e| {
+                IndexerError::PostgresReadError(format!(
+                    "Failed reading event in PostgresDB with error {:?}",
+                    e
+                ))
+            })
+    }
+
+    fn get_events(
+        &self,
+        query: EventQuery,
+        cursor: Option<EventID>,
+        limit: Option<usize>,
+        descending_order: bool,
+    ) -> Result<EventPage, IndexerError> {
+        let mut pg_pool_conn = get_pg_pool_connection(&self.cp)?;
+        let mut boxed_query = events::table.into_boxed();
+        match query {
+            EventQuery::All => {}
+            EventQuery::Transaction(digest) => {
+                boxed_query =
+                    boxed_query.filter(events::dsl::transaction_digest.eq(digest.base58_encode()));
+            }
+            EventQuery::MoveModule { package, module } => {
+                boxed_query = boxed_query
+                    .filter(events::dsl::package.eq(package.to_string()))
+                    .filter(events::dsl::module.eq(module));
+            }
+            EventQuery::MoveEvent(struct_name) => {
+                boxed_query = boxed_query.filter(events::dsl::event_type.eq(struct_name));
+            }
+            EventQuery::Sender(sender) => {
+                boxed_query = boxed_query.filter(events::dsl::sender.eq(sender.to_string()));
+            }
+            EventQuery::TimeRange {
+                start_time,
+                end_time,
+            } => {
+                boxed_query = boxed_query
+                    .filter(events::dsl::event_time_ms.ge(start_time as i64))
+                    .filter(events::dsl::event_time_ms.lt(end_time as i64));
+            }
+            EventQuery::EventType(_) => {}
+            _ => {
+                return Err(IndexerError::NotImplementedError(
+                    "Querying events by Recipient and Object is deprecated.".to_string(),
+                ));
+            }
+        }
+
+        let mut page_limit = limit.unwrap_or(MAX_EVENT_PAGE_SIZE);
+        if page_limit > MAX_EVENT_PAGE_SIZE {
+            Err(IndexerError::InvalidArgumentError(format!(
+                "Limit {} exceeds the maximum page size {}",
+                page_limit, MAX_EVENT_PAGE_SIZE
+            )))?;
+        }
+        // fetch one more item to tell if there is next page
+        page_limit += 1;
+
+        let pg_cursor = cursor
+            .map(|c| {
+                self.get_event(c)?
+                    .id
+                    .ok_or_else(|| IndexerError::PostgresReadError("Event ID is None".to_string()))
+            })
+            .transpose()?;
+        let events_vec: Vec<Event> = pg_pool_conn
+            .build_transaction()
+            .read_only()
+            .run(|conn| {
+                if let Some(pg_cursor) = pg_cursor {
+                    if descending_order {
+                        boxed_query = boxed_query.filter(events::dsl::id.lt(pg_cursor));
+                    } else {
+                        boxed_query = boxed_query.filter(events::dsl::id.gt(pg_cursor));
+                    }
+                }
+                if descending_order {
+                    boxed_query = boxed_query.order(events::id.desc());
+                } else {
+                    boxed_query = boxed_query.order(events::id.asc());
+                }
+                boxed_query.load(conn)
+            })
+            .map_err(|e| {
+                IndexerError::PostgresReadError(format!(
+                    "Failed reading events in PostgresDB with error {:?}",
+                    e
+                ))
+            })?;
+
+        let mut event_envelope_vec: Vec<SuiEventEnvelope> = events_vec
+            .into_iter()
+            .map(|event| event.try_into())
+            .collect::<Result<Vec<_>, _>>()?;
+        // reset to original limit for checking and truncating
+        page_limit -= 1;
+        let has_next_page = event_envelope_vec.len() > page_limit;
+        event_envelope_vec.truncate(page_limit);
+        let next_cursor = event_envelope_vec.last().map(|e| e.id.clone());
+        Ok(EventPage {
+            data: event_envelope_vec,
+            next_cursor,
+            has_next_page,
+        })
+    }
+
     fn get_total_transaction_number(&self) -> Result<i64, IndexerError> {
         let mut pg_pool_conn = get_pg_pool_connection(&self.cp)?;
         pg_pool_conn
             .build_transaction()
             .read_only()
-            .run(|conn| dsl::transactions.select(count(dsl::id)).first::<i64>(conn))
+            .run(|conn| {
+                transactions_dsl::transactions
+                    .select(count(transactions_dsl::id))
+                    .first::<i64>(conn)
+            })
             .map_err(|e| {
                 IndexerError::PostgresReadError(format!(
                     "Failed reading total transaction number with err: {:?}",
@@ -119,8 +257,8 @@ impl IndexerStore for PgIndexerStore {
             .build_transaction()
             .read_only()
             .run(|conn| {
-                dsl::transactions
-                    .filter(transaction_digest.eq(txn_digest))
+                transactions_dsl::transactions
+                    .filter(transactions_dsl::transaction_digest.eq(txn_digest))
                     .first::<Transaction>(conn)
             })
             .map_err(|e| {
@@ -143,14 +281,14 @@ impl IndexerStore for PgIndexerStore {
                     .build_transaction()
                     .read_only()
                     .run(|conn| {
-                        let mut boxed_query = dsl::transactions
-                            .filter(transaction_digest.eq(digest.clone()))
-                            .select(dsl::id)
+                        let mut boxed_query = transactions_dsl::transactions
+                            .filter(transactions_dsl::transaction_digest.eq(digest.clone()))
+                            .select(transactions_dsl::id)
                             .into_boxed();
                         if is_descending {
-                            boxed_query = boxed_query.order(dsl::id.desc());
+                            boxed_query = boxed_query.order(transactions_dsl::id.desc());
                         } else {
-                            boxed_query = boxed_query.order(dsl::id.asc());
+                            boxed_query = boxed_query.order(transactions_dsl::id.asc());
                         }
                         boxed_query.first::<i64>(conn)
                     })
@@ -162,6 +300,42 @@ impl IndexerStore for PgIndexerStore {
                     })
             })
             .transpose()
+    }
+
+    fn get_object(
+        &self,
+        object_id: ObjectID,
+        version: Option<SequenceNumber>,
+    ) -> Result<ObjectRead, IndexerError> {
+        let mut pg_pool_conn = get_pg_pool_connection(&self.cp)?;
+        let object = pg_pool_conn
+            .build_transaction()
+            .read_only()
+            .run(|conn| {
+                if let Some(version) = version {
+                    objects_history::dsl::objects_history
+                        .filter(objects_history::object_id.eq(object_id.to_string()))
+                        .filter(objects_history::version.eq(version.value() as i64))
+                        .get_result(conn)
+                        .optional()
+                } else {
+                    objects_dsl::objects
+                        .filter(objects_dsl::object_id.eq(object_id.to_string()))
+                        .first::<Object>(conn)
+                        .optional()
+                }
+            })
+            .map_err(|e| {
+                IndexerError::PostgresReadError(format!(
+                    "Failed reading object with id {} and err: {:?}",
+                    object_id, e
+                ))
+            })?;
+
+        match object {
+            None => Ok(ObjectRead::NotExists(object_id)),
+            Some(o) => o.try_into_object_read(&self.module_cache),
+        }
     }
 
     fn get_move_call_sequence_by_digest(
@@ -239,24 +413,24 @@ impl IndexerStore for PgIndexerStore {
             .build_transaction()
             .read_only()
             .run(|conn| {
-                let mut boxed_query = dsl::transactions.into_boxed();
+                let mut boxed_query = transactions_dsl::transactions.into_boxed();
                 if is_descending {
-                    boxed_query = boxed_query.order(dsl::id.desc());
+                    boxed_query = boxed_query.order(transactions_dsl::id.desc());
                 } else {
-                    boxed_query = boxed_query.order(dsl::id.asc());
+                    boxed_query = boxed_query.order(transactions_dsl::id.asc());
                 }
 
                 if is_descending {
                     boxed_query
-                        .order(dsl::id.desc())
+                        .order(transactions_dsl::id.desc())
                         .limit((limit + 1) as i64)
-                        .select(transaction_digest)
+                        .select(transactions_dsl::transaction_digest)
                         .load::<String>(conn)
                 } else {
                     boxed_query
-                        .order(dsl::id.asc())
+                        .order(transactions_dsl::id.asc())
                         .limit((limit + 1) as i64)
-                        .select(transaction_digest)
+                        .select(transactions_dsl::transaction_digest)
                         .load::<String>(conn)
                 }
             }).map_err(|e| {
@@ -293,9 +467,9 @@ impl IndexerStore for PgIndexerStore {
                 }
                 if let Some(start_sequence) = start_sequence {
                     if is_descending {
-                        builder = builder.filter(move_calls_dsl::id.le(start_sequence));
+                        builder = builder.filter(move_calls_dsl::id.lt(start_sequence));
                     } else {
-                        builder = builder.filter(move_calls_dsl::id.ge(start_sequence));
+                        builder = builder.filter(move_calls_dsl::id.gt(start_sequence));
                     }
                 }
 
@@ -328,30 +502,29 @@ impl IndexerStore for PgIndexerStore {
             .build_transaction()
             .read_only()
             .run(|conn| {
-                let mut boxed_query = dsl::transactions
-                    .filter(dsl::mutated.contains(vec![Some(object_id.clone())]))
+                let mut boxed_query = transactions_dsl::transactions
+                    .filter(transactions_dsl::mutated.contains(vec![Some(object_id.clone())]))
                     .into_boxed();
                 if let Some(start_sequence) = start_sequence {
                     if is_descending {
                         boxed_query = boxed_query
-                            .filter(dsl::id.le(start_sequence));
+                            .filter(transactions_dsl::id.lt(start_sequence));
                     } else {
                         boxed_query = boxed_query
-                            .filter(dsl::id.ge(start_sequence));
+                            .filter(transactions_dsl::id.gt(start_sequence));
                     }
                 }
-
                 if is_descending {
                     boxed_query
-                        .order(dsl::id.desc())
+                        .order(transactions_dsl::id.desc())
                         .limit(limit as i64)
-                        .select(transaction_digest)
+                        .select(transactions_dsl::transaction_digest)
                         .load::<String>(conn)
                 } else {
                     boxed_query
-                        .order(dsl::id.asc())
+                        .order(transactions_dsl::id.asc())
                         .limit(limit as i64)
-                        .select(transaction_digest)
+                        .select(transactions_dsl::transaction_digest)
                         .load::<String>(conn)
                 }
             }).map_err(|e| {
@@ -374,30 +547,30 @@ impl IndexerStore for PgIndexerStore {
             .build_transaction()
             .read_only()
             .run(|conn| {
-                    let mut boxed_query = dsl::transactions
-                        .filter(dsl::sender.eq(sender_address.clone()))
+                    let mut boxed_query = transactions_dsl::transactions
+                        .filter(transactions_dsl::sender.eq(sender_address.clone()))
                         .into_boxed();
                     if let Some(start_sequence) = start_sequence {
                         if is_descending {
                             boxed_query = boxed_query
-                                .filter(dsl::id.le(start_sequence));
+                                .filter(transactions_dsl::id.lt(start_sequence));
                         } else {
                             boxed_query = boxed_query
-                                .filter(dsl::id.ge(start_sequence));
+                                .filter(transactions_dsl::id.gt(start_sequence));
                         }
                     }
 
                     if is_descending {
                         boxed_query
-                            .order(dsl::id.desc())
+                            .order(transactions_dsl::id.desc())
                             .limit(limit as i64)
-                            .select(transaction_digest)
+                            .select(transactions_dsl::transaction_digest)
                             .load::<String>(conn)
                     } else {
                         boxed_query
-                            .order(dsl::id.asc())
+                            .order(transactions_dsl::id.asc())
                             .limit(limit as i64)
-                            .select(transaction_digest)
+                            .select(transactions_dsl::transaction_digest)
                             .load::<String>(conn)
                     }
             }).map_err(|e| {
@@ -433,9 +606,9 @@ impl IndexerStore for PgIndexerStore {
                     recipient_address.clone(),
                     if let Some(start_sequence) = start_sequence {
                         if is_descending {
-                            format!("AND id <= {}", start_sequence)
+                            format!("AND id < {}", start_sequence)
                         } else {
-                            format!("AND id >= {}", start_sequence)
+                            format!("AND id > {}", start_sequence)
                         }
                     } else {
                         "".to_string()
@@ -467,8 +640,8 @@ impl IndexerStore for PgIndexerStore {
             .build_transaction()
             .read_only()
             .run(|conn| {
-                dsl::transactions
-                    .filter(dsl::id.gt(last_processed_id))
+                transactions_dsl::transactions
+                    .filter(transactions_dsl::id.gt(last_processed_id))
                     .limit(limit as i64)
                     .load::<Transaction>(conn)
             })
@@ -500,7 +673,7 @@ impl IndexerStore for PgIndexerStore {
             .serializable()
             .read_write()
             .run(|conn| {
-                diesel::insert_into(checkpoints_table)
+                diesel::insert_into(checkpoints::table)
                     .values(checkpoint)
                     .execute(conn)?;
 
@@ -547,7 +720,7 @@ impl IndexerStore for PgIndexerStore {
                 // Only insert once for address, skip if conflict
                 diesel::insert_into(addresses::table)
                     .values(addresses)
-                    .on_conflict(account_address)
+                    .on_conflict(addresses::account_address)
                     .do_nothing()
                     .execute(conn)?;
 

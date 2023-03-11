@@ -17,7 +17,7 @@ describe('Test ID as args to entry functions', () => {
   beforeAll(async () => {
     toolbox = await setup();
     const packagePath = __dirname + '/./data/id_entry_args';
-    packageId = await publishPackage(packagePath);
+    ({ packageId } = await publishPackage(packagePath));
   });
 
   it('Test ID as arg to entry functions', async () => {
@@ -26,7 +26,6 @@ describe('Test ID as args to entry functions', () => {
     tx.add(
       Commands.MoveCall({
         target: `${packageId}::test::test_id`,
-        typeArguments: [],
         arguments: [
           tx.input(
             '0x000000000000000000000000c2b5625c221264078310a084df0a3137956d20ee',

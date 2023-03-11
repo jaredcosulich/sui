@@ -7,13 +7,14 @@ use crate::epoch::committee_store::CommitteeStore;
 use crate::test_authority_clients::LocalAuthorityClient;
 use fastcrypto::traits::KeyPair;
 use prometheus::Registry;
+use shared_crypto::intent::{Intent, IntentScope};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use sui_config::genesis::Genesis;
 use sui_config::ValidatorInfo;
-use sui_framework_build::compiled_package::{BuildConfig, CompiledPackage};
+use sui_framework_build::compiled_package::{BuildConfig, CompiledPackage, SuiPackageHooks};
 use sui_protocol_config::ProtocolConfig;
 use sui_types::base_types::ObjectID;
 use sui_types::crypto::{
@@ -21,7 +22,6 @@ use sui_types::crypto::{
     NetworkKeyPair, SuiKeyPair,
 };
 use sui_types::crypto::{AuthorityKeyPair, Signer};
-use sui_types::intent::{Intent, IntentScope};
 use sui_types::messages::{TransactionData, VerifiedTransaction, DUMMY_GAS_PRICE};
 use sui_types::object::OBJECT_START_VERSION;
 use sui_types::utils::create_fake_transaction;
@@ -128,6 +128,7 @@ pub fn dummy_transaction_effects(tx: &Transaction) -> TransactionEffects {
 }
 
 pub fn compile_basics_package() -> CompiledPackage {
+    move_package::package_hooks::register_package_hooks(Box::new(SuiPackageHooks {}));
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("../../sui_programmability/examples/basics");
 

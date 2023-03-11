@@ -3,6 +3,7 @@
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use futures::future::join_all;
 use itertools::Itertools;
 use jsonrpsee::core::RpcResult;
 use jsonrpsee::RpcModule;
@@ -17,7 +18,7 @@ use move_binary_format::normalized::{Module as NormalizedModule, Type};
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::StructTag;
 use move_core_types::value::{MoveStruct, MoveStructLayout, MoveValue};
-
+use shared_crypto::intent::{AppId, Intent, IntentMessage, IntentScope, IntentVersion};
 use sui_core::authority::AuthorityState;
 use sui_json_rpc_types::{
     Checkpoint, CheckpointId, DynamicFieldPage, MoveFunctionArgType, ObjectValueKind, Page,
@@ -36,7 +37,6 @@ use sui_types::digests::TransactionEventsDigest;
 use sui_types::display::{DisplayCreatedEvent, DisplayObject};
 use sui_types::dynamic_field::DynamicFieldName;
 use sui_types::error::UserInputError;
-use sui_types::intent::{AppId, Intent, IntentMessage, IntentScope, IntentVersion};
 use sui_types::messages::{
     TransactionData, TransactionEffects, TransactionEffectsAPI, TransactionEvents,
     VerifiedTransaction,
@@ -123,6 +123,7 @@ impl ReadApiServer for ReadApi {
     async fn get_dynamic_fields(
         &self,
         parent_object_id: ObjectID,
+        // exclusive cursor if `Some`, otherwise start from the beginning
         cursor: Option<ObjectID>,
         limit: Option<usize>,
     ) -> RpcResult<DynamicFieldPage> {
@@ -131,9 +132,14 @@ impl ReadApiServer for ReadApi {
             .state
             .get_dynamic_fields(parent_object_id, cursor, limit + 1)
             .map_err(|e| anyhow!("{e}"))?;
-        let next_cursor = data.get(limit).map(|info| info.object_id);
+        let has_next_page = data.len() > limit;
         data.truncate(limit);
-        Ok(DynamicFieldPage { data, next_cursor })
+        let next_cursor = data.last().cloned().map_or(cursor, |c| Some(c.object_id));
+        Ok(DynamicFieldPage {
+            data,
+            next_cursor,
+            has_next_page,
+        })
     }
 
     async fn get_object_with_options(
@@ -160,6 +166,40 @@ impl ReadApiServer for ReadApi {
                 ))
             }
             ObjectRead::Deleted(oref) => Ok(SuiObjectResponse::Deleted(oref.into())),
+        }
+    }
+
+    async fn multi_get_object_with_options(
+        &self,
+        object_ids: Vec<ObjectID>,
+        options: Option<SuiObjectDataOptions>,
+    ) -> RpcResult<Vec<SuiObjectResponse>> {
+        if object_ids.len() <= QUERY_MAX_RESULT_LIMIT {
+            let mut futures = vec![];
+            for object_id in object_ids {
+                futures.push(self.get_object_with_options(object_id, options.clone()))
+            }
+            let results = join_all(futures).await;
+            let (oks, errs): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
+
+            let success = oks.into_iter().filter_map(Result::ok).collect();
+            let errors: Vec<_> = errs.into_iter().filter_map(Result::err).collect();
+            if !errors.is_empty() {
+                let error_string = errors
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<String>>()
+                    .join("; ");
+                Err(anyhow!("{error_string}").into())
+            } else {
+                Ok(success)
+            }
+        } else {
+            Err(anyhow!(UserInputError::SizeLimitExceeded {
+                limit: "input limit".to_string(),
+                value: QUERY_MAX_RESULT_LIMIT.to_string()
+            })
+            .into())
         }
     }
 
@@ -573,6 +613,7 @@ impl ReadApiServer for ReadApi {
     async fn get_transactions(
         &self,
         query: TransactionQuery,
+        // exclusive cursor if `Some`, otherwise start from the beginning
         cursor: Option<TransactionDigest>,
         limit: Option<usize>,
         descending_order: Option<bool>,
@@ -586,9 +627,14 @@ impl ReadApiServer for ReadApi {
             .get_transactions(query, cursor, Some(limit + 1), descending)?;
 
         // extract next cursor
-        let next_cursor = data.get(limit).cloned();
+        let has_next_page = data.len() > limit;
         data.truncate(limit);
-        Ok(Page { data, next_cursor })
+        let next_cursor = data.last().cloned().map_or(cursor, Some);
+        Ok(Page {
+            data,
+            next_cursor,
+            has_next_page,
+        })
     }
 
     async fn get_latest_checkpoint_sequence_number(&self) -> RpcResult<CheckpointSequenceNumber> {
@@ -710,7 +756,8 @@ fn get_object_type_and_struct(
     let object_type = o
         .type_()
         .ok_or_else(|| anyhow!("Failed to extract object type"))?
-        .clone();
+        .clone()
+        .into();
     let move_struct = get_move_struct(o, layout)?;
     Ok((object_type, move_struct))
 }

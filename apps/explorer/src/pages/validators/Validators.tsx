@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import {
+    getMoveEvent,
+    isEventType,
     type SuiValidatorSummary,
     type SuiEventEnvelope,
 } from '@mysten/sui.js';
@@ -28,37 +30,39 @@ import { roundFloat } from '~/utils/roundFloat';
 
 const APY_DECIMALS = 3;
 
+// This constant needs to match the constant in the on-chain smart contract sui_system::MIN_VALIDATOR_STAKE。
+const MIN_VALIDATOR_STAKE = 25_000_000_000_000_000;
+
 const NodeMap = lazy(() => import('../../components/node-map'));
 
 export function validatorsTableData(
     validators: SuiValidatorSummary[],
     epoch: number,
-    validatorsEvents: SuiEventEnvelope[],
-    minimumStake: number
+    validatorsEvents: SuiEventEnvelope[]
 ) {
     return {
         data: validators.map((validator) => {
             const validatorName = validator.name;
-            const totalStake = validator.staking_pool_sui_balance;
-            const img = validator.image_url;
+            const totalStake = validator.stakingPoolSuiBalance;
+            const img = validator.imageUrl;
 
             const event = getValidatorMoveEvent(
                 validatorsEvents,
-                validator.sui_address
+                validator.suiAddress
             );
 
             return {
                 name: {
                     name: validatorName,
-                    logo: validator.image_url,
+                    logo: validator.imageUrl,
                 },
                 stake: totalStake,
                 apy: calculateAPY(validator, epoch),
-                commission: +validator.commission_rate / 100,
+                commission: +validator.commissionRate / 100,
                 img: img,
-                address: validator.sui_address,
+                address: validator.suiAddress,
                 lastReward: event?.fields.stake_rewards || 0,
-                atRisk: totalStake < minimumStake,
+                atRisk: totalStake < MIN_VALIDATOR_STAKE,
             };
         }),
         columns: [
@@ -179,7 +183,7 @@ function ValidatorPageResult() {
     const { data, isLoading, isSuccess, isError } = useGetSystemObject();
 
     const numberOfValidators = useMemo(
-        () => data?.active_validators.length || null,
+        () => data?.activeValidators.length || null,
         [data]
     );
 
@@ -194,17 +198,17 @@ function ValidatorPageResult() {
 
     const totalStaked = useMemo(() => {
         if (!data) return 0;
-        const validators = data.active_validators;
+        const validators = data.activeValidators;
 
         return validators.reduce(
-            (acc, cur) => acc + +cur.staking_pool_sui_balance,
+            (acc, cur) => acc + +cur.stakingPoolSuiBalance,
             0
         );
     }, [data]);
 
     const averageAPY = useMemo(() => {
         if (!data) return 0;
-        const validators = data.active_validators;
+        const validators = data.activeValidators;
 
         const validatorsApy = validators.map((av) =>
             calculateAPY(av, +data.epoch)
@@ -221,8 +225,8 @@ function ValidatorPageResult() {
         let totalRewards = 0;
 
         validatorEvents.data.forEach(({ event }) => {
-            if ('moveEvent' in event) {
-                const { moveEvent } = event;
+            if (isEventType(event, 'moveEvent')) {
+                const moveEvent = getMoveEvent(event)!;
                 totalRewards += +moveEvent.fields.stake_rewards;
             }
         });
@@ -233,13 +237,12 @@ function ValidatorPageResult() {
     const validatorsTable = useMemo(() => {
         if (!data || !validatorEvents) return null;
 
-        const validators = data.active_validators;
+        const validators = data.activeValidators;
 
         return validatorsTableData(
             validators,
             +data.epoch,
-            validatorEvents.data,
-            data.min_validator_stake
+            validatorEvents.data
         );
     }, [validatorEvents, data]);
 

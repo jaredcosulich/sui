@@ -78,7 +78,7 @@ export class Coin {
     }
 
     /**
-     * Stake `amount` of Coin<T> to `validator`. Technically it means user delegates `amount` of Coin<T> to `validator`,
+     * Stake `amount` of Coin<T> to `validator`. Technically it means user stakes `amount` of Coin<T> to `validator`,
      * such that `validator` will stake the `amount` of Coin<T> for the user.
      *
      * @param signer A signer with connection to fullnode
@@ -94,7 +94,7 @@ export class Coin {
         const transaction = Sentry.startTransaction({ name: 'stake' });
 
         const span = transaction.startChild({
-            op: 'request-add-delegation',
+            op: 'request-add-stake',
             description: 'Staking move call',
         });
 
@@ -106,8 +106,7 @@ export class Coin {
             );
             tx.add(
                 Transaction.Commands.MoveCall({
-                    target: '0x2::sui_system::request_add_delegation',
-                    typeArguments: [],
+                    target: '0x2::sui_system::request_add_stake',
                     arguments: [
                         tx.input(SUI_SYSTEM_STATE_OBJECT_ID),
                         stakeCoin,
@@ -124,7 +123,7 @@ export class Coin {
 
     public static async unStakeCoin(
         signer: SignerWithProvider,
-        delegation: ObjectId,
+        stake: ObjectId,
         stakedSuiId: ObjectId
     ): Promise<SuiTransactionResponse> {
         const transaction = Sentry.startTransaction({ name: 'unstake' });
@@ -133,11 +132,10 @@ export class Coin {
             tx.setGasBudget(DEFAULT_GAS_BUDGET_FOR_STAKE);
             tx.add(
                 Transaction.Commands.MoveCall({
-                    target: '0x2::sui_system::request_withdraw_delegation',
-                    typeArguments: [],
+                    target: '0x2::sui_system::request_withdraw_stake',
                     arguments: [
                         tx.input(SUI_SYSTEM_STATE_OBJECT_ID),
-                        tx.input(delegation),
+                        tx.input(stake),
                         tx.input(stakedSuiId),
                     ],
                 })

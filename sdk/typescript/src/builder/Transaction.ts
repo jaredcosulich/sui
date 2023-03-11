@@ -1,13 +1,16 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { fromB64 } from '@mysten/bcs';
 import { is } from 'superstruct';
 import { Provider } from '../providers/provider';
 import {
+  extractMutableReference,
   extractStructTag,
   getObjectReference,
   getSharedObjectInitialVersion,
   normalizeSuiObjectId,
+  SuiMoveNormalizedType,
   SuiObjectRef,
   SUI_TYPE_ARG,
 } from '../types';
@@ -85,6 +88,8 @@ function expectProvider(provider: Provider | undefined): Provider {
   return provider;
 }
 
+const TRANSACTION_BRAND = Symbol.for('@mysten/transaction');
+
 /**
  * Transaction Builder
  * @experimental
@@ -92,7 +97,11 @@ function expectProvider(provider: Provider | undefined): Provider {
 export class Transaction {
   /** Returns `true` if the object is an instance of the Transaction builder class. */
   static is(obj: unknown): obj is Transaction {
-    return obj instanceof Transaction;
+    return (
+      !!obj &&
+      typeof obj === 'object' &&
+      (obj as any)[TRANSACTION_BRAND] === true
+    );
   }
 
   /**
@@ -102,15 +111,19 @@ export class Transaction {
    * - A byte array (or base64-encoded bytes) containing BCS transaction data.
    */
   static from(serialized: string | Uint8Array) {
+    const tx = new Transaction();
+
     // Check for bytes:
     if (typeof serialized !== 'string' || !serialized.startsWith('{')) {
-      // TODO: Support fromBytes.
-      throw new Error('from() does not yet support bytes');
+      tx.#transactionData = TransactionDataBuilder.fromBytes(
+        typeof serialized === 'string' ? fromB64(serialized) : serialized,
+      );
+    } else {
+      tx.#transactionData = TransactionDataBuilder.restore(
+        JSON.parse(serialized),
+      );
     }
 
-    const parsed = JSON.parse(serialized);
-    const tx = new Transaction();
-    tx.#transactionData = TransactionDataBuilder.restore(parsed);
     return tx;
   }
 
@@ -146,6 +159,12 @@ export class Transaction {
     return this.#transactionData.snapshot();
   }
 
+  // Used to brand transaction classes so that they can be identified, even between multiple copies
+  // of the builder.
+  get [TRANSACTION_BRAND]() {
+    return true;
+  }
+
   constructor(transaction?: Transaction) {
     this.#transactionData = new TransactionDataBuilder(
       transaction ? transaction.#transactionData : undefined,
@@ -165,7 +184,6 @@ export class Transaction {
    * For `Uint8Array` type automatically convert the input into a `Pure` CallArg, since this
    * is the format required for custom serialization.
    *
-   * For `
    */
   input(value?: unknown) {
     // For Uint8Array
@@ -216,12 +234,30 @@ export class Transaction {
   /** Build the transaction to BCS bytes. */
   async build({
     provider,
-    // TODO: derive the buffer size automatically
-    size = 8192,
+    onlyTransactionKind,
   }: {
     provider?: Provider;
-    size?: number;
+    onlyTransactionKind?: boolean;
   } = {}): Promise<Uint8Array> {
+    await this.#prepare(provider);
+    return this.#transactionData.build({ onlyTransactionKind });
+  }
+
+  /** Derive transaction digest */
+  async getDigest({
+    provider,
+  }: {
+    provider?: Provider;
+  } = {}): Promise<string> {
+    await this.#prepare(provider);
+    return this.#transactionData.getDigest();
+  }
+
+  /**
+   * Prepare the transaction by valdiating the transaction data and resolving all inputs
+   * so that it can be built into bytes.
+   */
+  async #prepare(provider?: Provider) {
     if (!this.#transactionData.sender) {
       throw new Error('Missing transaction sender');
     }
@@ -242,7 +278,11 @@ export class Transaction {
 
     // Keep track of the object references that will need to be resolved at the end of the transaction.
     // We keep the input by-reference to avoid needing to re-resolve it:
-    const objectsToResolve: { id: string; input: TransactionInput }[] = [];
+    const objectsToResolve: {
+      id: string;
+      input: TransactionInput;
+      normalizedType?: SuiMoveNormalizedType;
+    }[] = [];
 
     commands.forEach((command) => {
       // Special case move call:
@@ -345,8 +385,10 @@ export class Transaction {
           params.forEach((param, i) => {
             const arg = moveCall.arguments[i];
             if (arg.kind !== 'Input') return;
-            if (is(inputs[arg.index], BuilderCallArg)) return;
             const input = inputs[arg.index];
+            // Skip if the input is already resolved
+            if (is(input, BuilderCallArg)) return;
+
             const inputValue = input.value;
 
             const serType = getPureSerializationType(param, inputValue);
@@ -370,7 +412,11 @@ export class Transaction {
                   )}`,
                 );
               }
-              objectsToResolve.push({ id: inputValue, input });
+              objectsToResolve.push({
+                id: inputValue,
+                input,
+                normalizedType: param,
+              });
               return;
             }
 
@@ -387,18 +433,37 @@ export class Transaction {
     }
 
     if (objectsToResolve.length) {
+      const dedupedIds = [...new Set(objectsToResolve.map(({ id }) => id))];
       // TODO: Use multi-get objects when that API exists instead of batch:
       const objects = await expectProvider(provider).getObjectBatch(
-        objectsToResolve.map(({ id }) => id),
+        dedupedIds,
         { showOwner: true },
       );
+      let objectsById = new Map(
+        dedupedIds.map((id, index) => {
+          return [id, objects[index]];
+        }),
+      );
 
-      objects.forEach((object, i) => {
-        const { id, input } = objectsToResolve[i];
+      const invalidObjects = Array.from(objectsById)
+        .filter(([_, obj]) => obj.status !== 'Exists')
+        .map(([id, _]) => id);
+      if (invalidObjects.length) {
+        throw new Error(
+          `The following input objects are not invalid: ${invalidObjects.join(
+            ', ',
+          )}`,
+        );
+      }
+
+      objectsToResolve.forEach(({ id, input, normalizedType }) => {
+        const object = objectsById.get(id)!;
         const initialSharedVersion = getSharedObjectInitialVersion(object);
 
         if (initialSharedVersion) {
-          const mutable = true; // Defaulted to True to match current behavior.
+          const mutable =
+            normalizedType != null &&
+            extractMutableReference(normalizedType) != null;
           input.value = Inputs.SharedObjectRef({
             objectId: id,
             initialSharedVersion,
@@ -447,7 +512,5 @@ export class Transaction {
         throw new Error('No valid gas coins found for the transaction.');
       }
     }
-
-    return this.#transactionData.build({ size });
   }
 }
