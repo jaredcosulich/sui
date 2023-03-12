@@ -49,11 +49,15 @@ export function TransferNFTForm({ objectId }: { objectId: string }) {
             tx.setGasBudget(DEFAULT_NFT_TRANSFER_GAS_FEE);
             tx.add(
                 Transaction.Commands.TransferObjects(
-                    [tx.input(objectId)],
-                    tx.input(to)
+                    [tx.object(objectId)],
+                    tx.pure(to)
                 )
             );
-            return signer.signAndExecuteTransaction(tx);
+            return signer.signAndExecuteTransaction(tx, {
+                showInput: true,
+                showEffects: true,
+                showEvents: true,
+            });
         },
         onSuccess: (response) => {
             queryClient.invalidateQueries(['object', objectId]);
