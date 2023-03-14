@@ -368,11 +368,6 @@ impl AuthorityStore {
             .transpose()
     }
 
-    /// Read an object and return it, or Ok(None) if the object was not found.
-    pub fn get_object(&self, object_id: &ObjectID) -> Result<Option<Object>, SuiError> {
-        self.perpetual_tables.as_ref().get_object(object_id)
-    }
-
     /// Get many objects
     pub fn get_objects(&self, objects: &[ObjectID]) -> Result<Vec<Option<Object>>, SuiError> {
         let mut result = Vec::new();
@@ -385,8 +380,19 @@ impl AuthorityStore {
     pub fn check_input_objects(
         &self,
         objects: &[InputObjectKind],
+        protocol_config: &ProtocolConfig,
     ) -> Result<Vec<Object>, SuiError> {
         let mut result = Vec::new();
+
+        fp_ensure!(
+            objects.len() <= protocol_config.max_input_objects() as usize,
+            UserInputError::SizeLimitExceeded {
+                limit: "maximum input objects in a transaction".to_string(),
+                value: protocol_config.max_input_objects().to_string()
+            }
+            .into()
+        );
+
         for kind in objects {
             let obj = match kind {
                 InputObjectKind::MovePackage(id) | InputObjectKind::SharedMoveObject { id, .. } => {
@@ -1184,6 +1190,13 @@ impl AuthorityStore {
                 &self.perpetual_tables.executed_effects,
                 iter::once(tx_digest),
             )?;
+        if let Some(events_digest) = effects.events_digest() {
+            write_batch = write_batch.delete_range(
+                &self.perpetual_tables.events,
+                &(*events_digest, usize::MIN),
+                &(*events_digest, usize::MAX),
+            )?;
+        }
 
         let all_new_refs = effects
             .mutated()
@@ -1392,6 +1405,13 @@ impl BackingPackageStore for AuthorityStore {
     }
 }
 
+impl ObjectStore for AuthorityStore {
+    /// Read an object and return it, or Ok(None) if the object was not found.
+    fn get_object(&self, object_id: &ObjectID) -> Result<Option<Object>, SuiError> {
+        self.perpetual_tables.as_ref().get_object(object_id)
+    }
+}
+
 impl ChildObjectResolver for AuthorityStore {
     fn read_child_object(&self, parent: &ObjectID, child: &ObjectID) -> SuiResult<Option<Object>> {
         let child_object = match self.get_object(child)? {
@@ -1449,12 +1469,6 @@ impl GetModule for AuthorityStore {
         Ok(self
             .get_module(id)?
             .map(|bytes| CompiledModule::deserialize(&bytes).unwrap()))
-    }
-}
-
-impl ObjectStore for AuthorityStore {
-    fn get_object(&self, object_id: &ObjectID) -> Result<Option<Object>, SuiError> {
-        self.get_object(object_id)
     }
 }
 
