@@ -1,10 +1,10 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { calculateAPY } from '@mysten/core';
 import cl from 'classnames';
 import { useState, useMemo } from 'react';
 
-import { calculateAPY } from '../calculateAPY';
 import { calculateStakeShare } from '../calculateStakeShare';
 import { useSystemState } from '../useSystemState';
 import { ValidatorListItem } from './ValidatorListItem';
@@ -61,7 +61,15 @@ export function SelectValidatorCard() {
                     BigInt(validator.stakingPoolSuiBalance),
                     BigInt(totalStake)
                 ),
-                logo: validator.imageUrl,
+                // flag for if the validator is at risk of being removed from the active set
+                atRiskValidator: data.atRiskValidators.some(
+                    (item) => item[0] === validator.suiAddress
+                ),
+                // flag new validators that have been activated in the current epoch
+                // for genesis validators, this will be false
+                newValidator:
+                    validator.stakingPoolActivationEpoch === +data.epoch &&
+                    data.epoch > 0,
             }))
             .sort((a, b) => {
                 if (sortKey === 'name') {
@@ -169,14 +177,11 @@ export function SelectValidatorCard() {
                                         selectedValidator === validator.address
                                     }
                                     validatorAddress={validator.address}
-                                    validatorName={validator.name}
-                                    label={sortKey}
                                     value={
                                         sortKey === 'name'
                                             ? '-'
                                             : `${validator[sortKey]}%`
                                     }
-                                    logo={validator.logo}
                                 />
                             </div>
                         ))}
