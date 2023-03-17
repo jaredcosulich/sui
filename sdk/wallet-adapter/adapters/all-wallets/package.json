@@ -28,8 +28,8 @@
     "prepublishOnly": "pnpm build"
   },
   "dependencies": {
-    "@mysten/wallet-adapter-unsafe-burner": "workspace:*",
-    "@mysten/wallet-adapter-wallet-standard": "workspace:*"
+    "@mysten/wallet-adapter-unsafe-burner": "/Users/jaredcosulich/workspace/ethos/sui/sui-local/sdk/wallet-adapter/adapters/unsafe-burner",
+    "@mysten/wallet-adapter-wallet-standard": "/Users/jaredcosulich/workspace/ethos/sui/sui-local/sdk/wallet-adapter/adapters/wallet-standard-adapter"
   },
   "devDependencies": {
     "tsup": "^6.5.0",

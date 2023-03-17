@@ -28,7 +28,7 @@
     "prepublishOnly": "pnpm build"
   },
   "dependencies": {
-    "@mysten/sui.js": "workspace:*",
+    "@mysten/sui.js": "/Users/jaredcosulich/workspace/ethos/sui/sui-local/sdk/typescript",
     "@wallet-standard/core": "1.0.1"
   },
   "devDependencies": {

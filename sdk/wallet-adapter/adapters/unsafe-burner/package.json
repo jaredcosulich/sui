@@ -28,9 +28,9 @@
     "prepublishOnly": "pnpm build"
   },
   "dependencies": {
-    "@mysten/sui.js": "workspace:*",
-    "@mysten/wallet-adapter-base": "workspace:*",
-    "@mysten/wallet-standard": "workspace:*"
+    "@mysten/sui.js": "/Users/jaredcosulich/workspace/ethos/sui/sui-local/sdk/typescript",
+    "@mysten/wallet-standard": "/Users/jaredcosulich/workspace/ethos/sui/sui-local/sdk/wallet-adapter/wallet-standard",
+    "@mysten/wallet-adapter-base": "/Users/jaredcosulich/workspace/ethos/sui/sui-local/sdk/wallet-adapter/adapters/base-adapter"
   },
   "devDependencies": {
     "tsup": "^6.5.0",

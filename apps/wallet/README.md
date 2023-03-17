@@ -1,3 +1,7 @@
+### BUILD RELEVANT PROJECTS
+
+cd sdk/typescript && pnpm build && cd ../bcs && pnpm build && cd ../wallet-adapter/wallet-standard && pnpm build && cd ../../..
+
 ## A note on Security
 
 **DISCLAIMER:** This code is provided for demonstration purposes only. The Sui Wallet has not been thoroughly tested, verified, or audited.
