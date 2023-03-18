@@ -2,7 +2,7 @@
 title: Create a local Sui network
 ---
 
-To test your dApps against the latest changes or to prepare for new features ahead of the next Devnet or Testnet release, you can test on a local network using the `sui-test-validator` binary. This binary starts a single-node cluster with Full node and faucet capabilities.
+To test your dApps against the latest changes to Sui, or to prepare for new features ahead of the next Devnet or Testnet release, you can test on a local network using the `sui-test-validator` binary. This binary starts a single-node cluster with Full node and faucet capabilities.
 
 ## Prerequisite
 
@@ -20,7 +20,7 @@ git clone https://github.com/MystenLabs/sui.git
 # Make sui the working directory
 cd sui
 # Build Sui
-cargo build sui-test-validator sui
+cargo build --bin sui-test-validator --bin sui
 ```
 
 To use remote code, `cargo install` Sui directly from the remote repository. The following example uses the `main` branch, but you can set other branches as needed (e.g., `--branch devnet`, `--branch testnet`, and so on) to target different network versions.
@@ -36,6 +36,8 @@ To run a local network with validators and a faucet, open a Terminal or Console 
 ```bash
 RUST_LOG="consensus=off" cargo run --bin sui-test-validator
 ```
+
+**Note** The state for `sui-test-validator` is currently not persistent, i.e., it will always start from a fresh state upon restart.
 
 You can customize your local Sui network by passing values to the following flags for the `sui-test-validator` command:
 
@@ -55,7 +57,7 @@ Use `sui-validator-test --help` to see these options in your console.
 
 ### Making faucet requests
 
-To get gas coins for an address, open a new Terminal or Conaole window or tab. Make a cURL request with the address you want to receive the coins. Use the `sui client active-address` command to get the current active address, if needed.
+To get gas coins for an address, open a new Terminal or Console window or tab. Make a cURL request and specify the address to receive the coins. Use the `sui client active-address` command to get the current active address, if needed.
 
 ```bash
 curl --location --request POST 'http://127.0.0.1:9123/gas' \
@@ -147,7 +149,7 @@ Similar to local Sui Explorer, you can also setup a local Sui Wallet. Open a Ter
 pnpm wallet start
 ```
 
-**Tips** You can set the default environment to be local network with https://github.com/MystenLabs/sui/tree/main/apps/wallet#environment-variables so that you don't have to switch network manually.
+**Tips** You can set the default environment to use your local network with https://github.com/MystenLabs/sui/tree/main/apps/wallet#environment-variables so that you don't have to switch network manually.
 
 For more details, reference [https://github.com/MystenLabs/sui/tree/main/apps/wallet](https://github.com/MystenLabs/sui/tree/main/apps/wallet).
 
@@ -160,3 +162,7 @@ pnpm sdk test:e2e
 ```
 
 For more details, refer to [https://github.com/MystenLabs/sui/tree/main/sdk/typescript#testing](https://github.com/MystenLabs/sui/tree/main/sdk/typescript#testing).
+
+## Testing with the Sui TypeScript SDK
+
+The published Sui TypeScript SDK version might be behind the local network version. To make sure you're using the latest version of the SDK, use the `experimental`-tagged version (for example, `0.0.0-experimental-20230317184920`) in the [Current Tags](https://www.npmjs.com/package/@mysten/sui.js/v/0.0.0-experimental-20230127130009?activeTab=versions) section of the Sui NPM registry.

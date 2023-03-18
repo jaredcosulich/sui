@@ -8973,6 +8973,7 @@ dependencies = [
  "sui-simulator",
  "sui-storage",
  "sui-types",
+ "sui-verifier",
  "tap",
  "telemetry-subscribers",
  "tempfile",
@@ -9298,8 +9299,10 @@ dependencies = [
 name = "sui-macros"
 version = "0.7.0"
 dependencies = [
+ "futures",
  "once_cell",
  "sui-proc-macros",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -9407,9 +9410,11 @@ dependencies = [
  "parking_lot 0.12.1",
  "prometheus",
  "reqwest",
+ "serde 1.0.152",
  "sui-config",
  "sui-core",
  "sui-json-rpc",
+ "sui-macros",
  "sui-network",
  "sui-protocol-config",
  "sui-simulator",
@@ -9504,6 +9509,7 @@ dependencies = [
  "itertools",
  "mime",
  "multiaddr",
+ "mysten-metrics",
  "prometheus",
  "prost",
  "prost-build",
