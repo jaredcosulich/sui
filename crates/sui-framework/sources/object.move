@@ -4,8 +4,10 @@
 /// Sui object identifiers
 module sui::object {
     use std::bcs;
+    use sui::address;
     use sui::tx_context::{Self, TxContext};
 
+    friend sui::clock;
     friend sui::dynamic_field;
     friend sui::dynamic_object_field;
     friend sui::sui_system;
@@ -17,8 +19,8 @@ module sui::object {
     /// The hardcoded ID for the singleton Sui System State Object.
     const SUI_SYSTEM_STATE_OBJECT_ID: address = @0x5;
 
-    /// Error from `address_from_bytes` when it is supplied too many or too few bytes.
-    const EAddressParseError: u64 = 0;
+    /// The hardcoded ID for the singleton Clock Object.
+    const SUI_CLOCK_OBJECT_ID: address = @0x6;
 
     /// An object ID. This is used to reference Sui Objects.
     /// This is *not* guaranteed to be globally unique--anyone can create an `ID` from a `UID` or
@@ -36,7 +38,7 @@ module sui::object {
 
     /// Globally unique IDs that define an object's ID in storage. Any Sui Object, that is a struct
     /// with the `key` ability, must have `id: UID` as its first field.
-    /// These are globaly unique in the sense that no two values of type `UID` are ever equal, in
+    /// These are globally unique in the sense that no two values of type `UID` are ever equal, in
     /// other words for any two values `id1: UID` and `id2: UID`, `id1` != `id2`.
     /// This is a privileged type that can only be derived from a `TxContext`.
     /// `UID` doesn't have the `drop` ability, so deleting a `UID` requires a call to `delete`.
@@ -44,13 +46,13 @@ module sui::object {
         id: ID,
     }
 
-    // === address ===
-
-    /// Convert raw bytes into an address, aborts if supplied too many
-    /// or too few bytes.
-    public native fun address_from_bytes(bytes: vector<u8>): address;
-
     // === id ===
+
+    /// Create an `ID`. Not to be mistaken for `object::new` which
+    /// generates a new UID.
+    public fun new_id(ctx: &mut TxContext): ID {
+        ID { bytes: tx_context::new_object(ctx) }
+    }
 
     /// Get the raw bytes of a `ID`
     public fun id_to_bytes(id: &ID): vector<u8> {
@@ -64,7 +66,7 @@ module sui::object {
 
     /// Make an `ID` from raw bytes.
     public fun id_from_bytes(bytes: vector<u8>): ID {
-        id_from_address(address_from_bytes(bytes))
+        id_from_address(address::from_bytes(bytes))
     }
 
     /// Make an `ID` from an address.
@@ -79,6 +81,14 @@ module sui::object {
     public(friend) fun sui_system_state(): UID {
         UID {
             id: ID { bytes: SUI_SYSTEM_STATE_OBJECT_ID },
+        }
+    }
+
+    /// Create the `UID` for the singleton `Clock` object.
+    /// This should only be called once from `clock`.
+    public(friend) fun clock(): UID {
+        UID {
+            id: ID { bytes: SUI_CLOCK_OBJECT_ID }
         }
     }
 
@@ -145,7 +155,7 @@ module sui::object {
     /// Get the `UID` for `obj`.
     /// Safe because Sui has an extra bytecode verifier pass that forces every struct with
     /// the `key` ability to have a distinguished `UID` field.
-    /// Cannot be made public as the access to `UID` for a given object must be privledged, and
+    /// Cannot be made public as the access to `UID` for a given object must be privileged, and
     /// restrictable in the object's module.
     native fun borrow_uid<T: key>(obj: &T): &UID;
 
@@ -160,14 +170,28 @@ module sui::object {
     // helper for delete
     native fun delete_impl(id: address);
 
+    spec delete_impl {
+        pragma opaque;
+        aborts_if [abstract] false;
+        ensures [abstract] !exists<Ownership>(id);
+    }
+
     // marks newly created UIDs from hash
     native fun record_new_uid(id: address);
+
+    spec record_new_uid {
+        pragma opaque;
+        // TODO: stub to be replaced by actual abort conditions if any
+        aborts_if [abstract] true;
+        // TODO: specify actual function behavior
+     }
 
     // Cost calibration functions
     #[test_only]
     public fun calibrate_address_from_bytes(bytes: vector<u8>) {
-        address_from_bytes(bytes);
+        sui::address::from_bytes(bytes);
     }
+
     #[test_only]
     public fun calibrate_address_from_bytes_nop(bytes: vector<u8>) {
         let _ = bytes;
@@ -197,4 +221,23 @@ module sui::object {
     public fun last_created(ctx: &TxContext): ID {
         ID { bytes: tx_context::last_created_object_id(ctx) }
     }
+
+
+    // === Prover support (to avoid circular dependency ===
+
+    #[verify_only]
+    /// Ownership information for a given object (stored at the object's address)
+    struct Ownership has key {
+        owner: address, // only matters if status == OWNED
+        status: u64,
+    }
+
+    #[verify_only]
+    /// List of fields with a given name type of an object containing fields (stored at the
+    /// containing object's address)
+    struct DynamicFields<K: copy + drop + store> has key {
+        names: vector<K>,
+    }
+
+
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, it, expect, beforeAll } from 'vitest';
+import { getTransactionDigest, getTransactionKind } from '../../src';
 import { setup, TestToolbox } from './utils/setup';
 
 describe('Transaction Reading API', () => {
@@ -17,57 +18,59 @@ describe('Transaction Reading API', () => {
   });
 
   it('Get Transaction', async () => {
-    const resp = await toolbox.provider.getTransactions(
-      'All',
-      null,
-      1,
-    );
-    const digest = resp.data[0];
-    const txn = await toolbox.provider.getTransactionWithEffects(digest);
-    expect(txn.certificate.transactionDigest).toEqual(digest);
+    const resp = await toolbox.provider.queryTransactions({
+      limit: 1,
+    });
+    const digest = resp.data[0].digest;
+    const txn = await toolbox.provider.getTransaction({ digest });
+    expect(getTransactionDigest(txn)).toEqual(digest);
   });
 
-  it('Get Transaction Auth Signers', async () => {
-    const version = await toolbox.provider.getRpcApiVersion();
-    // This endpoint is only available in 0.18 and above
-    if (version?.major === 0 && version?.minor < 18) { 
-      return;
-    }
-    
-    const resp = await toolbox.provider.getTransactions(
-      'All',
-      null,
-      1,
-    );
-    const digest = resp.data[0];
-    const res = await toolbox.provider.getTransactionAuthSigners(digest);
-    expect(res.signers.length).greaterThan(0);
+  it('Query Transactions with opts', async () => {
+    const options = { showEvents: true, showEffects: true };
+    const resp = await toolbox.provider.queryTransactions({
+      options,
+      limit: 1,
+    });
+    const digest = resp.data[0].digest;
+    const response2 = await toolbox.provider.getTransaction({
+      digest,
+      options,
+    });
+    expect(resp.data[0]).toEqual(response2);
   });
 
   it('Get Transactions', async () => {
-    const resp = await toolbox.provider.getTransactionsForAddress(
+    const resp = await toolbox.provider.queryTransactionsForAddressDeprecated(
       toolbox.address(),
-      false
+      false,
     );
     expect(resp.length).to.greaterThan(0);
 
-    const allTransactions = await toolbox.provider.getTransactions(
-      'All',
-      null,
-      10,
-    );
+    const allTransactions = await toolbox.provider.queryTransactions({
+      limit: 10,
+    });
     expect(allTransactions.data.length).to.greaterThan(0);
 
-    const resp2 = await toolbox.provider.getTransactions(
-      { ToAddress: toolbox.address() },
-      null,
-      null,
-    );
-    const resp3 = await toolbox.provider.getTransactions(
-      { FromAddress: toolbox.address() },
-      null,
-      null,
-    );
-    expect([...resp2.data, ...resp3.data]).toEqual(resp);
+    const resp2 = await toolbox.provider.queryTransactions({
+      filter: { ToAddress: toolbox.address() },
+    });
+    const resp3 = await toolbox.provider.queryTransactions({
+      filter: { FromAddress: toolbox.address() },
+    });
+    expect([...resp2.data, ...resp3.data].map((r) => r.digest)).toEqual(resp);
+  });
+
+  it('Genesis exists', async () => {
+    const allTransactions = await toolbox.provider.queryTransactions({
+      limit: 1,
+      order: 'ascending',
+    });
+    const resp = await toolbox.provider.getTransaction({
+      digest: allTransactions.data[0].digest,
+      options: { showInput: true },
+    });
+    const txKind = getTransactionKind(resp)!;
+    expect(txKind.kind === 'Genesis').toBe(true);
   });
 });

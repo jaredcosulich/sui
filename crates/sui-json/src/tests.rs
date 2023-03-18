@@ -152,12 +152,12 @@ fn test_basic_args_linter_pure_args_bad() {
                 Value::from(bad_hex_val),
                 MoveTypeLayout::Vector(Box::new(MoveTypeLayout::U8)),
             ),
-            // u8 vector from heterogenous array
+            // u8 vector from heterogeneous array
             (
                 json!([1, 2, 3, true, 5, 6, 7]),
                 MoveTypeLayout::Vector(Box::new(MoveTypeLayout::U8)),
             ),
-            // U64 deep nest, bad because heterogenous array
+            // U64 deep nest, bad because heterogeneous array
             (
                 json!([[[9, 53, 434], [0], [300]], [], [300, 4, 5, 6, 7]]),
                 MoveTypeLayout::Vector(Box::new(MoveTypeLayout::Vector(Box::new(MoveTypeLayout::U64)))),
@@ -359,7 +359,7 @@ fn test_basic_args_linter_pure_args_good() {
         ),
         // U64 nest
         (
-            json!([[1111, 2, 3], [], [300, 4, 5, 6, 7]]),
+            json!([["1111", "2", "3"], [], ["300", "4", "5", "6", "7"]]),
             MoveTypeLayout::Vector(Box::new(MoveTypeLayout::Vector(Box::new(
                 MoveTypeLayout::U64,
             )))),
@@ -370,16 +370,16 @@ fn test_basic_args_linter_pure_args_good() {
             ])
             .unwrap(),
         ),
-        // U64 deep nest, good
+        // U32 deep nest, good
         (
             json!([[[9, 53, 434], [0], [300]], [], [[332], [4, 5, 6, 7]]]),
             MoveTypeLayout::Vector(Box::new(MoveTypeLayout::Vector(Box::new(
-                MoveTypeLayout::Vector(Box::new(MoveTypeLayout::U64)),
+                MoveTypeLayout::Vector(Box::new(MoveTypeLayout::U32)),
             )))),
             bcs::to_bytes(&vec![
-                vec![vec![9u64, 53u64, 434u64], vec![0u64], vec![300u64]],
+                vec![vec![9u32, 53u32, 434u32], vec![0u32], vec![300u32]],
                 vec![],
-                vec![vec![332u64], vec![4u64, 5u64, 6u64, 7u64]],
+                vec![vec![332u32], vec![4u32, 5u32, 6u32, 7u32]],
             ])
             .unwrap(),
         ),
@@ -401,9 +401,12 @@ fn test_basic_args_linter_pure_args_good() {
 fn test_basic_args_linter_top_level() {
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sui_programmability/examples/nfts");
-    let compiled_modules = BuildConfig::default().build(path).unwrap().into_modules();
+    let compiled_modules = BuildConfig::new_for_testing()
+        .build(path)
+        .unwrap()
+        .into_modules();
     let example_package =
-        Object::new_package(compiled_modules, TransactionDigest::genesis()).unwrap();
+        Object::new_package_for_testing(compiled_modules, TransactionDigest::genesis()).unwrap();
     let example_package = example_package.data.try_as_package().unwrap();
 
     let module = Identifier::new("geniteam").unwrap();
@@ -426,7 +429,7 @@ fn test_basic_args_linter_top_level() {
     */
 
     let monster_name_raw = "MonsterName";
-    let monster_img_id_raw = 12345678;
+    let monster_img_id_raw = "12345678";
     let breed_raw = 89;
     let monster_affinity_raw = 200;
     let monster_description_raw = "MonsterDescription";
@@ -460,30 +463,36 @@ fn test_basic_args_linter_top_level() {
     .map(|q| SuiJsonValue::new(q.clone()).unwrap())
     .collect();
 
-    let json_args =
-        resolve_move_function_args(example_package, module.clone(), function.clone(), &[], args)
-            .unwrap();
+    let json_args = resolve_move_function_args(
+        example_package,
+        module.clone(),
+        function.clone(),
+        &[],
+        args,
+        /* allow_arbitrary_function_call */ false,
+    )
+    .unwrap();
 
     assert!(!json_args.is_empty());
 
     assert_eq!(
-        json_args[1],
+        json_args[1].0,
         SuiJsonCallArg::Pure(bcs::to_bytes(&monster_name_raw.as_bytes().to_vec()).unwrap())
     );
     assert_eq!(
-        json_args[2],
-        SuiJsonCallArg::Pure(bcs::to_bytes(&(monster_img_id_raw as u64)).unwrap()),
+        json_args[2].0,
+        SuiJsonCallArg::Pure(bcs::to_bytes(&(monster_img_id_raw.parse::<u64>().unwrap())).unwrap()),
     );
     assert_eq!(
-        json_args[3],
+        json_args[3].0,
         SuiJsonCallArg::Pure(bcs::to_bytes(&(breed_raw as u8)).unwrap())
     );
     assert_eq!(
-        json_args[4],
+        json_args[4].0,
         SuiJsonCallArg::Pure(bcs::to_bytes(&(monster_affinity_raw as u8)).unwrap()),
     );
     assert_eq!(
-        json_args[5],
+        json_args[5].0,
         SuiJsonCallArg::Pure(bcs::to_bytes(&monster_description_raw.as_bytes().to_vec()).unwrap()),
     );
 
@@ -499,14 +508,25 @@ fn test_basic_args_linter_top_level() {
     .iter()
     .map(|q| SuiJsonValue::new(q.clone()).unwrap())
     .collect();
-    assert!(resolve_move_function_args(example_package, module, function, &[], args).is_err());
+    assert!(resolve_move_function_args(
+        example_package,
+        module,
+        function,
+        &[],
+        args,
+        /* allow_arbitrary_function_call */ false
+    )
+    .is_err());
 
     // Test with vecu8 as address
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sui_programmability/examples/basics");
-    let compiled_modules = BuildConfig::default().build(path).unwrap().into_modules();
+    let compiled_modules = BuildConfig::new_for_testing()
+        .build(path)
+        .unwrap()
+        .into_modules();
     let example_package =
-        Object::new_package(compiled_modules, TransactionDigest::genesis()).unwrap();
+        Object::new_package_for_testing(compiled_modules, TransactionDigest::genesis()).unwrap();
     let framework_pkg = example_package.data.try_as_package().unwrap();
 
     let module = Identifier::new("object_basics").unwrap();
@@ -516,7 +536,7 @@ fn test_basic_args_linter_top_level() {
     Function signature:
             public fun create(value: u64, recipient: vector<u8>, ctx: &mut TxContext)
     */
-    let value_raw = 29897;
+    let value_raw = "29897";
     let address = SuiAddress::random_for_testing_only();
 
     let value = json!(value_raw);
@@ -529,17 +549,25 @@ fn test_basic_args_linter_top_level() {
         .map(|q| SuiJsonValue::new(q.clone()).unwrap())
         .collect();
 
-    let args = resolve_move_function_args(framework_pkg, module, function, &[], args).unwrap();
+    let args = resolve_move_function_args(
+        framework_pkg,
+        module,
+        function,
+        &[],
+        args,
+        /* allow_arbitrary_function_call */ false,
+    )
+    .unwrap();
 
     assert_eq!(
-        args[0],
-        SuiJsonCallArg::Pure(bcs::to_bytes(&(value_raw as u64)).unwrap())
+        args[0].0,
+        SuiJsonCallArg::Pure(bcs::to_bytes(&(value_raw.parse::<u64>().unwrap())).unwrap())
     );
 
     // Need to verify this specially
     // BCS serialzes addresses like vectors so there's a length prefix, which makes the vec longer by 1
     assert_eq!(
-        args[1],
+        args[1].0,
         SuiJsonCallArg::Pure(bcs::to_bytes(&AccountAddress::from(address)).unwrap()),
     );
 
@@ -565,10 +593,18 @@ fn test_basic_args_linter_top_level() {
         .map(|q| SuiJsonValue::new(q.clone()).unwrap())
         .collect();
 
-    let args = resolve_move_function_args(framework_pkg, module, function, &[], args).unwrap();
+    let args = resolve_move_function_args(
+        framework_pkg,
+        module,
+        function,
+        &[],
+        args,
+        /* allow_arbitrary_function_call */ false,
+    )
+    .unwrap();
 
     assert_eq!(
-        args[0],
+        args[0].0,
         SuiJsonCallArg::Object(
             ObjectID::from_hex_literal(&format!("0x{:02x}", object_id_raw)).unwrap()
         )
@@ -577,16 +613,19 @@ fn test_basic_args_linter_top_level() {
     // Need to verify this specially
     // BCS serialzes addresses like vectors so there's a length prefix, which makes the vec longer by 1
     assert_eq!(
-        args[1],
+        args[1].0,
         SuiJsonCallArg::Pure(bcs::to_bytes(&AccountAddress::from(address)).unwrap())
     );
 
     // Test with object vector  args
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../sui-core/src/unit_tests/data/entry_point_vector");
-    let compiled_modules = BuildConfig::default().build(path).unwrap().into_modules();
+    let compiled_modules = BuildConfig::new_for_testing()
+        .build(path)
+        .unwrap()
+        .into_modules();
     let example_package =
-        Object::new_package(compiled_modules, TransactionDigest::genesis()).unwrap();
+        Object::new_package_for_testing(compiled_modules, TransactionDigest::genesis()).unwrap();
     let example_package = example_package.data.try_as_package().unwrap();
 
     let module = Identifier::new("entry_point_vector").unwrap();
@@ -603,11 +642,19 @@ fn test_basic_args_linter_top_level() {
 
     let args = vec![SuiJsonValue::new(Value::Array(vec![object_id1, object_id2])).unwrap()];
 
-    let args = resolve_move_function_args(example_package, module, function, &[], args).unwrap();
+    let args = resolve_move_function_args(
+        example_package,
+        module,
+        function,
+        &[],
+        args,
+        /* allow_arbitrary_function_call */ false,
+    )
+    .unwrap();
 
-    assert!(matches!(args[0], SuiJsonCallArg::ObjVec { .. }));
+    assert!(matches!(args[0].0, SuiJsonCallArg::ObjVec { .. }));
 
-    if let SuiJsonCallArg::ObjVec(vec) = &args[0] {
+    if let SuiJsonCallArg::ObjVec(vec) = &args[0].0 {
         assert_eq!(vec.len(), 2);
         assert_eq!(
             vec[0],
@@ -623,29 +670,45 @@ fn test_basic_args_linter_top_level() {
 #[test]
 fn test_convert_address_from_bcs() {
     let bcs_bytes = [
-        108u8, 214, 91, 255, 14, 227, 197, 199, 210, 104, 209, 187, 210, 219, 24, 72, 248, 243,
-        180, 6,
+        50, 134, 111, 1, 9, 250, 27, 169, 17, 57, 45, 205, 45, 66, 96, 241, 216, 36, 49, 51, 22,
+        245, 70, 122, 191, 100, 24, 123, 62, 239, 165, 85,
     ];
 
     let value = SuiJsonValue::from_bcs_bytes(&bcs_bytes).unwrap();
+
     assert_eq!(
-        "0x6cd65bff0ee3c5c7d268d1bbd2db1848f8f3b406",
+        "0x32866f0109fa1ba911392dcd2d4260f1d824313316f5467abf64187b3eefa555",
         value.0.as_str().unwrap()
     );
 }
 
 #[test]
 fn test_convert_number_from_bcs() {
-    let bcs_bytes = [160u8, 134, 1, 0, 0, 0, 0, 0];
+    let bcs_bytes = [160u8, 134, 1, 0];
     let value = SuiJsonValue::from_bcs_bytes(&bcs_bytes).unwrap();
     assert_eq!(100000, value.0.as_u64().unwrap());
 }
 
 #[test]
+fn test_no_address_zero_trimming() {
+    let bcs_bytes = bcs::to_bytes(
+        &AccountAddress::from_str(
+            "0x0000000000000000000000000000011111111111111111111111111111111111",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let value = SuiJsonValue::from_bcs_bytes(&bcs_bytes).unwrap();
+    assert_eq!(
+        "0x0000000000000000000000000000011111111111111111111111111111111111",
+        value.0.as_str().unwrap()
+    );
+}
+
+#[test]
 fn test_convert_number_array_from_bcs() {
     let bcs_bytes = [
-        5, 80, 195, 0, 0, 0, 0, 0, 0, 80, 195, 0, 0, 0, 0, 0, 0, 80, 195, 0, 0, 0, 0, 0, 0, 80,
-        195, 0, 0, 0, 0, 0, 0, 80, 195, 0, 0, 0, 0, 0, 0,
+        5, 80, 195, 0, 0, 80, 195, 0, 0, 80, 195, 0, 0, 80, 195, 0, 0, 80, 195, 0, 0,
     ];
 
     let value = SuiJsonValue::from_bcs_bytes(&bcs_bytes).unwrap();
@@ -677,7 +740,7 @@ fn test_from_str() {
     assert!(test.0.is_boolean());
 
     // test id without quotes
-    let object_id = ObjectID::random().to_hex_literal();
+    let object_id = ObjectID::random().to_hex_uncompressed();
     let test = SuiJsonValue::from_str(&object_id).unwrap();
     assert!(test.0.is_string());
     assert_eq!(object_id, test.0.as_str().unwrap());
@@ -695,5 +758,15 @@ fn test_from_str() {
     // test string with quotes
     let test = SuiJsonValue::from_str("\"Some string\"").unwrap();
     assert!(test.0.is_string());
-    assert_eq!("Some string", test.0.as_str().unwrap())
+    assert_eq!("Some string", test.0.as_str().unwrap());
+
+    let test = SuiJsonValue::from_object_id(
+        ObjectID::from_str("0x0000000000000000000000000000000000000000000000000000000000000001")
+            .unwrap(),
+    );
+    assert!(test.0.is_string());
+    assert_eq!(
+        "0x0000000000000000000000000000000000000000000000000000000000000001",
+        test.0.as_str().unwrap()
+    );
 }

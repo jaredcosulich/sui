@@ -1,4 +1,6 @@
 # Copyright(C) Facebook, Inc. and its affiliates.
+# Copyright (c) Mysten Labs, Inc.
+# SPDX-License-Identifier: Apache-2.0
 from os.path import join
 
 from benchmark.utils import PathMaker
@@ -17,8 +19,16 @@ class CommandMaker:
         return f'rm -r {PathMaker.logs_path()} ; mkdir -p {PathMaker.logs_path()}'
 
     @staticmethod
-    def compile():
-        return ["cargo", "build", "--quiet", "--release", "--features", "benchmark"]
+    def compile(failpoints=False, release=True):
+        cmd = ["cargo", "build", "--quiet", "--features", "benchmark"]
+
+        if failpoints:
+            cmd = cmd + [cmd.pop(-1) + " fail/failpoints"]
+
+        if release:
+            cmd = cmd + ["--release"]
+
+        return cmd
 
     @staticmethod
     def generate_key(filename):
@@ -26,10 +36,15 @@ class CommandMaker:
         return f'./narwhal-node generate_keys --filename {filename}'
 
     @staticmethod
+    def get_pub_key(filename):
+        assert isinstance(filename, str)
+        return f'./narwhal-node get_pub_key --filename {filename}'
+
+    @staticmethod
     def generate_network_key(filename):
         assert isinstance(filename, str)
         return f'./narwhal-node generate_network_keys --filename {filename}'
-
+     
     @staticmethod
     def run_primary(primary_keys, primary_network_keys, worker_keys, committee, workers, store, parameters, debug=False):
         assert isinstance(primary_keys, str)
@@ -112,5 +127,6 @@ class CommandMaker:
     @staticmethod
     def alias_binaries(origin):
         assert isinstance(origin, str)
-        node, client = join(origin, 'narwhal-node'), join(origin, 'narwhal-benchmark-client')
+        node, client = join(
+            origin, 'narwhal-node'), join(origin, 'narwhal-benchmark-client')
         return f'rm -f narwhal-node ; rm -f narwhal-benchmark-client ; ln -s {node} . ; ln -s {client} .'

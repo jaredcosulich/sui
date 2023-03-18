@@ -39,6 +39,11 @@ tokens and coins. <code><a href="coin.md#0x2_coin_Coin">Coin</a></code> can be d
 -  [Function `update_symbol`](#0x2_coin_update_symbol)
 -  [Function `update_description`](#0x2_coin_update_description)
 -  [Function `update_icon_url`](#0x2_coin_update_icon_url)
+-  [Function `get_decimals`](#0x2_coin_get_decimals)
+-  [Function `get_name`](#0x2_coin_get_name)
+-  [Function `get_symbol`](#0x2_coin_get_symbol)
+-  [Function `get_description`](#0x2_coin_get_description)
+-  [Function `get_icon_url`](#0x2_coin_get_icon_url)
 
 
 <pre><code><b>use</b> <a href="">0x1::ascii</a>;
@@ -517,6 +522,22 @@ Aborts if <code>value &gt; <a href="balance.md#0x2_balance">balance</a>.value</c
 
 </details>
 
+<details>
+<summary>Specification</summary>
+
+
+
+<pre><code><b>let</b> before_val = <a href="balance.md#0x2_balance">balance</a>.value;
+<b>let</b> <b>post</b> after_val = <a href="balance.md#0x2_balance">balance</a>.value;
+<b>ensures</b> after_val == before_val - value;
+<b>aborts_if</b> value &gt; before_val;
+<b>aborts_if</b> ctx.ids_created + 1 &gt; MAX_U64;
+</code></pre>
+
+
+
+</details>
+
 <a name="0x2_coin_put"></a>
 
 ## Function `put`
@@ -536,6 +557,21 @@ Put a <code><a href="coin.md#0x2_coin_Coin">Coin</a>&lt;T&gt;</code> to the <cod
 <pre><code><b>public</b> <b>fun</b> <a href="coin.md#0x2_coin_put">put</a>&lt;T&gt;(<a href="balance.md#0x2_balance">balance</a>: &<b>mut</b> Balance&lt;T&gt;, <a href="coin.md#0x2_coin">coin</a>: <a href="coin.md#0x2_coin_Coin">Coin</a>&lt;T&gt;) {
     <a href="balance.md#0x2_balance_join">balance::join</a>(<a href="balance.md#0x2_balance">balance</a>, <a href="coin.md#0x2_coin_into_balance">into_balance</a>(<a href="coin.md#0x2_coin">coin</a>));
 }
+</code></pre>
+
+
+
+</details>
+
+<details>
+<summary>Specification</summary>
+
+
+
+<pre><code><b>let</b> before_val = <a href="balance.md#0x2_balance">balance</a>.value;
+<b>let</b> <b>post</b> after_val = <a href="balance.md#0x2_balance">balance</a>.value;
+<b>ensures</b> after_val == before_val + <a href="coin.md#0x2_coin">coin</a>.<a href="balance.md#0x2_balance">balance</a>.value;
+<b>aborts_if</b> before_val + <a href="coin.md#0x2_coin">coin</a>.<a href="balance.md#0x2_balance">balance</a>.value &gt; MAX_U64;
 </code></pre>
 
 
@@ -570,6 +606,21 @@ Aborts if <code>c.value + self.value &gt; U64_MAX</code>
 
 </details>
 
+<details>
+<summary>Specification</summary>
+
+
+
+<pre><code><b>let</b> before_val = self.<a href="balance.md#0x2_balance">balance</a>.value;
+<b>let</b> <b>post</b> after_val = self.<a href="balance.md#0x2_balance">balance</a>.value;
+<b>ensures</b> after_val == before_val + c.<a href="balance.md#0x2_balance">balance</a>.value;
+<b>aborts_if</b> before_val + c.<a href="balance.md#0x2_balance">balance</a>.value &gt; MAX_U64;
+</code></pre>
+
+
+
+</details>
+
 <a name="0x2_coin_split"></a>
 
 ## Function `split`
@@ -592,6 +643,22 @@ and the remaining balance is left is <code>self</code>.
 ): <a href="coin.md#0x2_coin_Coin">Coin</a>&lt;T&gt; {
     <a href="coin.md#0x2_coin_take">take</a>(&<b>mut</b> self.<a href="balance.md#0x2_balance">balance</a>, split_amount, ctx)
 }
+</code></pre>
+
+
+
+</details>
+
+<details>
+<summary>Specification</summary>
+
+
+
+<pre><code><b>let</b> before_val = self.<a href="balance.md#0x2_balance">balance</a>.value;
+<b>let</b> <b>post</b> after_val = self.<a href="balance.md#0x2_balance">balance</a>.value;
+<b>ensures</b> after_val == before_val - split_amount;
+<b>aborts_if</b> split_amount &gt; before_val;
+<b>aborts_if</b> ctx.ids_created + 1 &gt; MAX_U64;
 </code></pre>
 
 
@@ -624,12 +691,37 @@ Split coin <code>self</code> into <code>n - 1</code> coins with equal balances. 
     <b>let</b> vec = <a href="_empty">vector::empty</a>&lt;<a href="coin.md#0x2_coin_Coin">Coin</a>&lt;T&gt;&gt;();
     <b>let</b> i = 0;
     <b>let</b> split_amount = <a href="coin.md#0x2_coin_value">value</a>(self) / n;
-    <b>while</b> (i &lt; n - 1) {
+    <b>while</b> ({
+        <b>spec</b> {
+            <b>invariant</b> i &lt;= n-1;
+            <b>invariant</b> self.<a href="balance.md#0x2_balance">balance</a>.value == <b>old</b>(self).<a href="balance.md#0x2_balance">balance</a>.value - (i * split_amount);
+            <b>invariant</b> ctx.ids_created == <b>old</b>(ctx).ids_created + i;
+        };
+        i &lt; n - 1
+    }) {
         <a href="_push_back">vector::push_back</a>(&<b>mut</b> vec, <a href="coin.md#0x2_coin_split">split</a>(self, split_amount, ctx));
         i = i + 1;
     };
     vec
 }
+</code></pre>
+
+
+
+</details>
+
+<details>
+<summary>Specification</summary>
+
+
+
+<pre><code><b>let</b> before_val = self.<a href="balance.md#0x2_balance">balance</a>.value;
+<b>let</b> <b>post</b> after_val = self.<a href="balance.md#0x2_balance">balance</a>.value;
+<b>let</b> split_amount = before_val / n;
+<b>ensures</b> after_val == before_val - ((n - 1) * split_amount);
+<b>aborts_if</b> n == 0;
+<b>aborts_if</b> self.<a href="balance.md#0x2_balance">balance</a>.<a href="coin.md#0x2_coin_value">value</a> &lt; n;
+<b>aborts_if</b> ctx.ids_created + n - 1 &gt; MAX_U64;
 </code></pre>
 
 
@@ -776,6 +868,19 @@ in <code>cap</code> accordingly.
 
 </details>
 
+<details>
+<summary>Specification</summary>
+
+
+
+<pre><code><b>include</b> <a href="coin.md#0x2_coin_MintBalance">MintBalance</a>&lt;T&gt;;
+<b>aborts_if</b> ctx.ids_created + 1 &gt; MAX_U64;
+</code></pre>
+
+
+
+</details>
+
 <a name="0x2_coin_mint_balance"></a>
 
 ## Function `mint_balance`
@@ -805,6 +910,18 @@ Aborts if <code>value</code> + <code>cap.total_supply</code> >= U64_MAX
 
 </details>
 
+<details>
+<summary>Specification</summary>
+
+
+
+<pre><code><b>include</b> <a href="coin.md#0x2_coin_MintBalance">MintBalance</a>&lt;T&gt;;
+</code></pre>
+
+
+
+</details>
+
 <a name="0x2_coin_burn"></a>
 
 ## Function `burn`
@@ -827,6 +944,18 @@ accordingly.
     <a href="object.md#0x2_object_delete">object::delete</a>(id);
     <a href="balance.md#0x2_balance_decrease_supply">balance::decrease_supply</a>(&<b>mut</b> cap.total_supply, <a href="balance.md#0x2_balance">balance</a>)
 }
+</code></pre>
+
+
+
+</details>
+
+<details>
+<summary>Specification</summary>
+
+
+
+<pre><code><b>include</b> <a href="coin.md#0x2_coin_Burn">Burn</a>&lt;T&gt;;
 </code></pre>
 
 
@@ -867,7 +996,7 @@ Mint <code>amount</code> of <code><a href="coin.md#0x2_coin_Coin">Coin</a></code
 Burn a Coin and reduce the total_supply. Invokes <code><a href="coin.md#0x2_coin_burn">burn</a>()</code>.
 
 
-<pre><code><b>public</b> entry <b>fun</b> <a href="coin.md#0x2_coin_burn_">burn_</a>&lt;T&gt;(c: &<b>mut</b> <a href="coin.md#0x2_coin_TreasuryCap">coin::TreasuryCap</a>&lt;T&gt;, <a href="coin.md#0x2_coin">coin</a>: <a href="coin.md#0x2_coin_Coin">coin::Coin</a>&lt;T&gt;)
+<pre><code><b>public</b> entry <b>fun</b> <a href="coin.md#0x2_coin_burn_">burn_</a>&lt;T&gt;(cap: &<b>mut</b> <a href="coin.md#0x2_coin_TreasuryCap">coin::TreasuryCap</a>&lt;T&gt;, c: <a href="coin.md#0x2_coin_Coin">coin::Coin</a>&lt;T&gt;)
 </code></pre>
 
 
@@ -876,9 +1005,21 @@ Burn a Coin and reduce the total_supply. Invokes <code><a href="coin.md#0x2_coin
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> entry <b>fun</b> <a href="coin.md#0x2_coin_burn_">burn_</a>&lt;T&gt;(c: &<b>mut</b> <a href="coin.md#0x2_coin_TreasuryCap">TreasuryCap</a>&lt;T&gt;, <a href="coin.md#0x2_coin">coin</a>: <a href="coin.md#0x2_coin_Coin">Coin</a>&lt;T&gt;) {
-    <a href="coin.md#0x2_coin_burn">burn</a>(c, <a href="coin.md#0x2_coin">coin</a>);
+<pre><code><b>public</b> entry <b>fun</b> <a href="coin.md#0x2_coin_burn_">burn_</a>&lt;T&gt;(cap: &<b>mut</b> <a href="coin.md#0x2_coin_TreasuryCap">TreasuryCap</a>&lt;T&gt;, c: <a href="coin.md#0x2_coin_Coin">Coin</a>&lt;T&gt;) {
+    <a href="coin.md#0x2_coin_burn">burn</a>(cap, c);
 }
+</code></pre>
+
+
+
+</details>
+
+<details>
+<summary>Specification</summary>
+
+
+
+<pre><code><b>include</b> <a href="coin.md#0x2_coin_Burn">Burn</a>&lt;T&gt;;
 </code></pre>
 
 
@@ -986,6 +1127,136 @@ Update the url of the coin in <code><a href="coin.md#0x2_coin_CoinMetadata">Coin
     _treasury: &<a href="coin.md#0x2_coin_TreasuryCap">TreasuryCap</a>&lt;T&gt;, metadata: &<b>mut</b> <a href="coin.md#0x2_coin_CoinMetadata">CoinMetadata</a>&lt;T&gt;, <a href="url.md#0x2_url">url</a>: <a href="_String">ascii::String</a>
 ) {
     metadata.icon_url = <a href="_some">option::some</a>(<a href="url.md#0x2_url_new_unsafe">url::new_unsafe</a>(<a href="url.md#0x2_url">url</a>));
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="0x2_coin_get_decimals"></a>
+
+## Function `get_decimals`
+
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="coin.md#0x2_coin_get_decimals">get_decimals</a>&lt;T&gt;(metadata: &<a href="coin.md#0x2_coin_CoinMetadata">coin::CoinMetadata</a>&lt;T&gt;): u8
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="coin.md#0x2_coin_get_decimals">get_decimals</a>&lt;T&gt;(
+    metadata: &<a href="coin.md#0x2_coin_CoinMetadata">CoinMetadata</a>&lt;T&gt;
+): u8 {
+    metadata.decimals
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="0x2_coin_get_name"></a>
+
+## Function `get_name`
+
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="coin.md#0x2_coin_get_name">get_name</a>&lt;T&gt;(metadata: &<a href="coin.md#0x2_coin_CoinMetadata">coin::CoinMetadata</a>&lt;T&gt;): <a href="_String">string::String</a>
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="coin.md#0x2_coin_get_name">get_name</a>&lt;T&gt;(
+    metadata: &<a href="coin.md#0x2_coin_CoinMetadata">CoinMetadata</a>&lt;T&gt;
+): <a href="_String">string::String</a> {
+    metadata.name
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="0x2_coin_get_symbol"></a>
+
+## Function `get_symbol`
+
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="coin.md#0x2_coin_get_symbol">get_symbol</a>&lt;T&gt;(metadata: &<a href="coin.md#0x2_coin_CoinMetadata">coin::CoinMetadata</a>&lt;T&gt;): <a href="_String">ascii::String</a>
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="coin.md#0x2_coin_get_symbol">get_symbol</a>&lt;T&gt;(
+    metadata: &<a href="coin.md#0x2_coin_CoinMetadata">CoinMetadata</a>&lt;T&gt;
+): <a href="_String">ascii::String</a> {
+    metadata.symbol
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="0x2_coin_get_description"></a>
+
+## Function `get_description`
+
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="coin.md#0x2_coin_get_description">get_description</a>&lt;T&gt;(metadata: &<a href="coin.md#0x2_coin_CoinMetadata">coin::CoinMetadata</a>&lt;T&gt;): <a href="_String">string::String</a>
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="coin.md#0x2_coin_get_description">get_description</a>&lt;T&gt;(
+    metadata: &<a href="coin.md#0x2_coin_CoinMetadata">CoinMetadata</a>&lt;T&gt;
+): <a href="_String">string::String</a> {
+    metadata.description
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="0x2_coin_get_icon_url"></a>
+
+## Function `get_icon_url`
+
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="coin.md#0x2_coin_get_icon_url">get_icon_url</a>&lt;T&gt;(metadata: &<a href="coin.md#0x2_coin_CoinMetadata">coin::CoinMetadata</a>&lt;T&gt;): <a href="_Option">option::Option</a>&lt;<a href="url.md#0x2_url_Url">url::Url</a>&gt;
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="coin.md#0x2_coin_get_icon_url">get_icon_url</a>&lt;T&gt;(
+    metadata: &<a href="coin.md#0x2_coin_CoinMetadata">CoinMetadata</a>&lt;T&gt;
+): Option&lt;Url&gt; {
+    metadata.icon_url
 }
 </code></pre>
 

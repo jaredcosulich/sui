@@ -31,9 +31,14 @@ impl FaucetClientFactory {
                     .await;
 
                 let prom_registry = prometheus::Registry::new();
-                let simple_faucet = SimpleFaucet::new(wallet_context, &prom_registry)
-                    .await
-                    .unwrap();
+                let simple_faucet = SimpleFaucet::new(
+                    wallet_context,
+                    &prom_registry,
+                    &cluster.config_directory().join("faucet.wal"),
+                )
+                .await
+                .unwrap();
+
                 Arc::new(LocalFaucetClient::new(simple_faucet))
             }
         }
@@ -61,7 +66,7 @@ impl RemoteFaucetClient {
 #[async_trait]
 impl FaucetClient for RemoteFaucetClient {
     /// Request test SUI coins from faucet.
-    /// It also verifies the effects are observed by gateway/fullnode.
+    /// It also verifies the effects are observed by fullnode.
     async fn request_sui_coins(&self, request_address: SuiAddress) -> FaucetResponse {
         let gas_url = format!("{}/gas", self.remote_url);
         debug!("Getting coin from remote faucet {}", gas_url);
@@ -109,7 +114,7 @@ impl FaucetClient for LocalFaucetClient {
     async fn request_sui_coins(&self, request_address: SuiAddress) -> FaucetResponse {
         let receipt = self
             .simple_faucet
-            .send(Uuid::new_v4(), request_address, &[200000; 5])
+            .send(Uuid::new_v4(), request_address, &[200000000; 5])
             .await
             .unwrap_or_else(|err| panic!("Failed to get gas tokens with error: {}", err));
 

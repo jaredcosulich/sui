@@ -7,11 +7,9 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
-use sui_types::committee::StakeUnit;
 use tracing::trace;
 
 pub mod builder;
-pub mod gateway;
 pub mod genesis;
 pub mod genesis_config;
 pub mod node;
@@ -29,7 +27,6 @@ pub const SUI_NETWORK_CONFIG: &str = "network.yaml";
 pub const SUI_FULLNODE_CONFIG: &str = "fullnode.yaml";
 pub const SUI_CLIENT_CONFIG: &str = "client.yaml";
 pub const SUI_KEYSTORE_FILENAME: &str = "sui.keystore";
-pub const SUI_GATEWAY_CONFIG: &str = "gateway.yaml";
 pub const SUI_GENESIS_FILENAME: &str = "genesis.blob";
 pub const SUI_DEV_NET_URL: &str = "https://fullnode.devnet.sui.io:443";
 
@@ -37,7 +34,6 @@ pub const AUTHORITIES_DB_NAME: &str = "authorities_db";
 pub const CONSENSUS_DB_NAME: &str = "consensus_db";
 pub const FULL_NODE_DB_PATH: &str = "full_node_db";
 
-const DEFAULT_STAKE: StakeUnit = 100000000000000;
 const DEFAULT_GAS_PRICE: u64 = 1;
 const DEFAULT_COMMISSION_RATE: u64 = 0;
 

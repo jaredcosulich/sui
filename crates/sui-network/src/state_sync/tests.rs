@@ -3,23 +3,16 @@
 
 use crate::{
     state_sync::{
-        Builder, GetCheckpointSummaryRequest, StateSync, StateSyncMessage, UnstartedStateSync,
+        test_utils::{empty_contents, CommitteeFixture},
+        Builder, GetCheckpointSummaryRequest, PeerStateSyncInfo, StateSync, StateSyncMessage,
+        UnstartedStateSync,
     },
     utils::build_network,
 };
 use anemo::{PeerId, Request};
 use std::{collections::HashMap, time::Duration};
 use sui_types::{
-    base_types::AuthorityName,
-    committee::{Committee, EpochId, StakeUnit},
-    crypto::{
-        AuthorityKeyPair, AuthoritySignInfo, AuthoritySignature, AuthorityWeakQuorumSignInfo,
-        KeypairTraits, SuiAuthoritySignature,
-    },
-    messages_checkpoint::{
-        CertifiedCheckpointSummary, CheckpointContents, CheckpointDigest, CheckpointSequenceNumber,
-        CheckpointSummary, VerifiedCheckpoint,
-    },
+    messages_checkpoint::CheckpointDigest,
     storage::{ReadStore, SharedInMemoryStore, WriteStore},
 };
 use tokio::time::timeout;
@@ -28,8 +21,13 @@ use tokio::time::timeout;
 async fn server_push_checkpoint() {
     let committee = CommitteeFixture::generate(rand::rngs::OsRng, 0, 4);
     let (ordered_checkpoints, _sequence_number_to_digest, _checkpoints) =
-        committee.make_checkpoints(1, None);
+        committee.make_checkpoints(2, None);
     let store = SharedInMemoryStore::default();
+    store.inner_mut().insert_genesis_state(
+        ordered_checkpoints.first().cloned().unwrap(),
+        empty_contents(),
+        committee.committee().to_owned(),
+    );
 
     let (
         UnstartedStateSync {
@@ -42,23 +40,36 @@ async fn server_push_checkpoint() {
     ) = Builder::new().store(store).build_internal();
     let peer_id = PeerId([9; 32]); // fake PeerId
 
-    let checkpoint = ordered_checkpoints[0].inner().to_owned();
+    peer_heights.write().unwrap().peers.insert(
+        peer_id,
+        PeerStateSyncInfo {
+            genesis_checkpoint_digest: *ordered_checkpoints[0].digest(),
+            on_same_chain_as_us: true,
+            height: 0,
+        },
+    );
+
+    let checkpoint = ordered_checkpoints[1].inner().to_owned();
     let request = Request::new(checkpoint.clone()).with_extension(peer_id);
     server.push_checkpoint_summary(request).await.unwrap();
 
     assert_eq!(
-        peer_heights.read().unwrap().heights.get(&peer_id),
-        Some(&Some(0))
+        peer_heights.read().unwrap().peers.get(&peer_id),
+        Some(&PeerStateSyncInfo {
+            genesis_checkpoint_digest: *ordered_checkpoints[0].digest(),
+            on_same_chain_as_us: true,
+            height: 1,
+        })
     );
     assert_eq!(
         peer_heights
             .read()
             .unwrap()
             .unprocessed_checkpoints
-            .get(&checkpoint.digest())
+            .get(checkpoint.digest())
             .unwrap()
-            .summary,
-        checkpoint.summary,
+            .data(),
+        checkpoint.data(),
     );
     assert_eq!(
         peer_heights
@@ -66,8 +77,8 @@ async fn server_push_checkpoint() {
             .unwrap()
             .highest_known_checkpoint()
             .unwrap()
-            .summary,
-        checkpoint.summary,
+            .data(),
+        checkpoint.data(),
     );
     assert!(matches!(
         mailbox.try_recv().unwrap(),
@@ -77,15 +88,35 @@ async fn server_push_checkpoint() {
 
 #[tokio::test]
 async fn server_get_checkpoint() {
+    let committee = CommitteeFixture::generate(rand::rngs::OsRng, 0, 4);
+    let (ordered_checkpoints, _sequence_number_to_digest, _checkpoints) =
+        committee.make_checkpoints(3, None);
+
     let (builder, server) = Builder::new()
         .store(SharedInMemoryStore::default())
         .build_internal();
 
+    builder.store.inner_mut().insert_genesis_state(
+        ordered_checkpoints.first().cloned().unwrap(),
+        empty_contents(),
+        committee.committee().to_owned(),
+    );
+
+    // Requests for the Latest checkpoint should return the genesis checkpoint
+    let response = server
+        .get_checkpoint_summary(Request::new(GetCheckpointSummaryRequest::Latest))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        response.unwrap().data(),
+        ordered_checkpoints.first().unwrap().data(),
+    );
+
     // Requests for checkpoints that aren't in the server's store
     let requests = [
-        GetCheckpointSummaryRequest::Latest,
         GetCheckpointSummaryRequest::BySequenceNumber(9),
-        GetCheckpointSummaryRequest::ByDigest([10; 32]),
+        GetCheckpointSummaryRequest::ByDigest(CheckpointDigest::new([10; 32])),
     ];
     for request in requests {
         let response = server
@@ -97,9 +128,6 @@ async fn server_get_checkpoint() {
     }
 
     // Populate the node's store with some checkpoints
-    let committee = CommitteeFixture::generate(rand::rngs::OsRng, 0, 4);
-    let (ordered_checkpoints, _sequence_number_to_digest, _checkpoints) =
-        committee.make_checkpoints(3, None);
     for checkpoint in ordered_checkpoints.clone() {
         builder.store.inner_mut().insert_checkpoint(checkpoint)
     }
@@ -116,20 +144,20 @@ async fn server_get_checkpoint() {
         .unwrap()
         .into_inner()
         .unwrap();
-    assert_eq!(response.summary, latest.summary);
+    assert_eq!(response.data(), latest.data());
 
     for checkpoint in ordered_checkpoints {
-        let request = Request::new(GetCheckpointSummaryRequest::ByDigest(checkpoint.digest()));
+        let request = Request::new(GetCheckpointSummaryRequest::ByDigest(*checkpoint.digest()));
         let response = server
             .get_checkpoint_summary(request)
             .await
             .unwrap()
             .into_inner()
             .unwrap();
-        assert_eq!(response.summary, checkpoint.summary);
+        assert_eq!(response.data(), checkpoint.data());
 
         let request = Request::new(GetCheckpointSummaryRequest::BySequenceNumber(
-            checkpoint.sequence_number(),
+            *checkpoint.sequence_number(),
         ));
         let response = server
             .get_checkpoint_summary(request)
@@ -137,13 +165,16 @@ async fn server_get_checkpoint() {
             .unwrap()
             .into_inner()
             .unwrap();
-        assert_eq!(response.summary, checkpoint.summary);
+        assert_eq!(response.data(), checkpoint.data());
     }
 }
 
 #[tokio::test]
 async fn isolated_sync_job() {
     let committee = CommitteeFixture::generate(rand::rngs::OsRng, 0, 4);
+    // build mock data
+    let (ordered_checkpoints, sequence_number_to_digest, checkpoints) =
+        committee.make_checkpoints(100, None);
 
     // Build and connect two nodes
     let (builder, server) = Builder::new().store(SharedInMemoryStore::default()).build();
@@ -155,18 +186,16 @@ async fn isolated_sync_job() {
     network_1.connect(network_2.local_addr()).await.unwrap();
 
     // Init the root committee in both nodes
-    event_loop_1
-        .store
-        .inner_mut()
-        .insert_committee(committee.committee().to_owned());
-    event_loop_2
-        .store
-        .inner_mut()
-        .insert_committee(committee.committee().to_owned());
-
-    // build mock data
-    let (ordered_checkpoints, sequence_number_to_digest, checkpoints) =
-        committee.make_checkpoints(100, None);
+    event_loop_1.store.inner_mut().insert_genesis_state(
+        ordered_checkpoints.first().cloned().unwrap(),
+        empty_contents(),
+        committee.committee().to_owned(),
+    );
+    event_loop_2.store.inner_mut().insert_genesis_state(
+        ordered_checkpoints.first().cloned().unwrap(),
+        empty_contents(),
+        committee.committee().to_owned(),
+    );
 
     // Node 2 will have all the data
     {
@@ -177,41 +206,44 @@ async fn isolated_sync_job() {
     }
 
     // Node 1 will know that Node 2 has the data
+    event_loop_1.peer_heights.write().unwrap().peers.insert(
+        network_2.peer_id(),
+        PeerStateSyncInfo {
+            genesis_checkpoint_digest: *ordered_checkpoints[0].digest(),
+            on_same_chain_as_us: true,
+            height: *ordered_checkpoints.last().unwrap().sequence_number(),
+        },
+    );
     event_loop_1
         .peer_heights
         .write()
         .unwrap()
-        .update_peer_height(
-            network_2.peer_id(),
-            ordered_checkpoints
-                .last()
-                .cloned()
-                .map(VerifiedCheckpoint::into_inner),
-        );
+        .insert_checkpoint(ordered_checkpoints.last().cloned().unwrap().into_inner());
 
     // Sync the data
     event_loop_1.maybe_start_checkpoint_summary_sync_task();
     event_loop_1.tasks.join_next().await.unwrap().unwrap();
     assert_eq!(
-        ordered_checkpoints.last().map(|x| &x.summary),
-        event_loop_1
-            .store
-            .get_highest_verified_checkpoint()
-            .unwrap()
-            .as_ref()
-            .map(|x| &x.summary)
+        ordered_checkpoints.last().map(|x| x.data()),
+        Some(
+            event_loop_1
+                .store
+                .get_highest_verified_checkpoint()
+                .unwrap()
+                .data()
+        )
     );
 
     {
         let store = event_loop_1.store.inner();
         let expected = checkpoints
             .iter()
-            .map(|(key, value)| (key, &value.summary))
+            .map(|(key, value)| (key, value.data()))
             .collect::<HashMap<_, _>>();
         let actual = store
             .checkpoints()
             .iter()
-            .map(|(key, value)| (key, &value.summary))
+            .map(|(key, value)| (key, value.data()))
             .collect::<HashMap<_, _>>();
         assert_eq!(actual, expected);
         assert_eq!(
@@ -225,6 +257,9 @@ async fn isolated_sync_job() {
 async fn sync_with_checkpoints_being_inserted() {
     telemetry_subscribers::init_for_testing();
     let committee = CommitteeFixture::generate(rand::rngs::OsRng, 0, 4);
+    // build mock data
+    let (ordered_checkpoints, sequence_number_to_digest, checkpoints) =
+        committee.make_checkpoints(4, None);
 
     // Build and connect two nodes
     let (builder, server) = Builder::new().store(SharedInMemoryStore::default()).build();
@@ -236,38 +271,38 @@ async fn sync_with_checkpoints_being_inserted() {
     network_1.connect(network_2.local_addr()).await.unwrap();
 
     // Init the root committee in both nodes
-    event_loop_1
-        .store
-        .inner_mut()
-        .insert_committee(committee.committee().to_owned());
-    event_loop_2
-        .store
-        .inner_mut()
-        .insert_committee(committee.committee().to_owned());
+    event_loop_1.store.inner_mut().insert_genesis_state(
+        ordered_checkpoints.first().cloned().unwrap(),
+        empty_contents(),
+        committee.committee().to_owned(),
+    );
+    event_loop_2.store.inner_mut().insert_genesis_state(
+        ordered_checkpoints.first().cloned().unwrap(),
+        empty_contents(),
+        committee.committee().to_owned(),
+    );
 
     // get handles to each node's stores
     let store_1 = event_loop_1.store.clone();
     let store_2 = event_loop_2.store.clone();
     // make sure that node_1 knows about node_2
-    event_loop_1
-        .peer_heights
-        .write()
-        .unwrap()
-        .heights
-        .insert(network_2.peer_id(), None);
+    event_loop_1.peer_heights.write().unwrap().peers.insert(
+        network_2.peer_id(),
+        PeerStateSyncInfo {
+            genesis_checkpoint_digest: *ordered_checkpoints[0].digest(),
+            on_same_chain_as_us: true,
+            height: 0,
+        },
+    );
     // Start both event loops
     tokio::spawn(event_loop_1.start());
     tokio::spawn(event_loop_2.start());
-
-    // build mock data
-    let (ordered_checkpoints, sequence_number_to_digest, checkpoints) =
-        committee.make_checkpoints(4, None);
 
     let mut subscriber_1 = handle_1.subscribe_to_synced_checkpoints();
     let mut subscriber_2 = handle_2.subscribe_to_synced_checkpoints();
 
     // Inject one checkpoint and verify that it was shared with the other node
-    let mut checkpoint_iter = ordered_checkpoints.clone().into_iter();
+    let mut checkpoint_iter = ordered_checkpoints.clone().into_iter().skip(1);
     store_1
         .insert_checkpoint_contents(empty_contents())
         .unwrap();
@@ -277,12 +312,12 @@ async fn sync_with_checkpoints_being_inserted() {
 
     timeout(Duration::from_secs(1), async {
         assert_eq!(
-            subscriber_1.recv().await.unwrap().summary(),
-            ordered_checkpoints[0].summary(),
+            subscriber_1.recv().await.unwrap().data(),
+            ordered_checkpoints[1].data(),
         );
         assert_eq!(
-            subscriber_2.recv().await.unwrap().summary(),
-            ordered_checkpoints[0].summary()
+            subscriber_2.recv().await.unwrap().data(),
+            ordered_checkpoints[1].data()
         );
     })
     .await
@@ -294,15 +329,9 @@ async fn sync_with_checkpoints_being_inserted() {
     }
 
     timeout(Duration::from_secs(1), async {
-        for checkpoint in &ordered_checkpoints[1..] {
-            assert_eq!(
-                subscriber_1.recv().await.unwrap().summary(),
-                checkpoint.summary()
-            );
-            assert_eq!(
-                subscriber_2.recv().await.unwrap().summary(),
-                checkpoint.summary()
-            );
+        for checkpoint in &ordered_checkpoints[2..] {
+            assert_eq!(subscriber_1.recv().await.unwrap().data(), checkpoint.data());
+            assert_eq!(subscriber_2.recv().await.unwrap().data(), checkpoint.data());
         }
     })
     .await
@@ -327,12 +356,12 @@ async fn sync_with_checkpoints_being_inserted() {
 
     let expected = checkpoints
         .iter()
-        .map(|(key, value)| (key, &value.summary))
+        .map(|(key, value)| (key, value.data()))
         .collect::<HashMap<_, _>>();
     let actual_1 = store_1
         .checkpoints()
         .iter()
-        .map(|(key, value)| (key, &value.summary))
+        .map(|(key, value)| (key, value.data()))
         .collect::<HashMap<_, _>>();
     assert_eq!(actual_1, expected);
     assert_eq!(
@@ -343,141 +372,11 @@ async fn sync_with_checkpoints_being_inserted() {
     let actual_2 = store_2
         .checkpoints()
         .iter()
-        .map(|(key, value)| (key, &value.summary))
+        .map(|(key, value)| (key, value.data()))
         .collect::<HashMap<_, _>>();
     assert_eq!(actual_2, expected);
     assert_eq!(
         store_2.checkpoint_sequence_number_to_digest(),
         &sequence_number_to_digest
     );
-}
-
-struct CommitteeFixture {
-    epoch: EpochId,
-    validators: HashMap<AuthorityName, (AuthorityKeyPair, StakeUnit)>,
-    committee: Committee,
-}
-
-impl CommitteeFixture {
-    pub fn generate<R: ::rand::RngCore + ::rand::CryptoRng>(
-        mut rng: R,
-        epoch: EpochId,
-        committee_size: usize,
-    ) -> Self {
-        let validators = (0..committee_size)
-            .map(|_| sui_types::crypto::get_key_pair_from_rng::<AuthorityKeyPair, _>(&mut rng).1)
-            .map(|keypair| (keypair.public().into(), (keypair, 1)))
-            .collect::<HashMap<_, _>>();
-
-        let committee = Committee::new(
-            epoch,
-            validators
-                .iter()
-                .map(|(name, (_, stake))| (*name, *stake))
-                .collect(),
-        )
-        .unwrap();
-
-        Self {
-            epoch,
-            validators,
-            committee,
-        }
-    }
-
-    pub fn committee(&self) -> &Committee {
-        &self.committee
-    }
-
-    fn create_root_checkpoint(&self) -> VerifiedCheckpoint {
-        assert_eq!(self.epoch, 0, "root checkpoint must be epoch 0");
-        let checkpoint = CheckpointSummary {
-            epoch: 0,
-            sequence_number: 0,
-            content_digest: empty_contents().digest(),
-            previous_digest: None,
-            epoch_rolling_gas_cost_summary: Default::default(),
-            next_epoch_committee: None,
-        };
-
-        self.create_certified_checkpoint(checkpoint)
-    }
-
-    fn create_certified_checkpoint(&self, checkpoint: CheckpointSummary) -> VerifiedCheckpoint {
-        let signatures = self
-            .validators
-            .iter()
-            .map(|(name, (key, _))| {
-                let signature = AuthoritySignature::new(&checkpoint, checkpoint.epoch, key);
-                AuthoritySignInfo {
-                    epoch: checkpoint.epoch,
-                    authority: *name,
-                    signature,
-                }
-            })
-            .collect();
-
-        let checkpoint = CertifiedCheckpointSummary {
-            summary: checkpoint,
-            auth_signature: AuthorityWeakQuorumSignInfo::new_from_auth_sign_infos(
-                signatures,
-                self.committee(),
-            )
-            .unwrap(),
-        };
-
-        let checkpoint = VerifiedCheckpoint::new(checkpoint, self.committee()).unwrap();
-
-        checkpoint
-    }
-
-    pub fn make_checkpoints(
-        &self,
-        number_of_checkpoints: usize,
-        previous_checkpoint: Option<VerifiedCheckpoint>,
-    ) -> (
-        Vec<VerifiedCheckpoint>,
-        HashMap<CheckpointSequenceNumber, CheckpointDigest>,
-        HashMap<CheckpointDigest, VerifiedCheckpoint>,
-    ) {
-        // Only skip the first one if it was supplied
-        let skip = previous_checkpoint.is_some() as usize;
-        let first = previous_checkpoint.unwrap_or_else(|| self.create_root_checkpoint());
-
-        let ordered_checkpoints = std::iter::successors(Some(first), |prev| {
-            let summary = CheckpointSummary {
-                epoch: self.epoch,
-                sequence_number: prev.summary.sequence_number + 1,
-                content_digest: empty_contents().digest(),
-                previous_digest: Some(prev.summary.digest()),
-                epoch_rolling_gas_cost_summary: Default::default(),
-                next_epoch_committee: None,
-            };
-
-            let checkpoint = self.create_certified_checkpoint(summary);
-
-            Some(checkpoint)
-        })
-        .skip(skip)
-        .take(number_of_checkpoints)
-        .collect::<Vec<_>>();
-
-        let (sequence_number_to_digest, checkpoints) = ordered_checkpoints
-            .iter()
-            .cloned()
-            .map(|checkpoint| {
-                let digest = checkpoint.summary.digest();
-                (
-                    (checkpoint.summary.sequence_number, digest),
-                    (digest, checkpoint),
-                )
-            })
-            .unzip();
-
-        (ordered_checkpoints, sequence_number_to_digest, checkpoints)
-    }
-}
-
-pub fn empty_contents() -> CheckpointContents {
-    CheckpointContents::new_with_causally_ordered_transactions(std::iter::empty())
 }

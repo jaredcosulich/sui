@@ -2,40 +2,43 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use prometheus::Registry;
-use sui::client_commands::WalletContext;
 use sui_core::authority_client::NetworkAuthorityClient;
 use sui_core::transaction_orchestrator::TransactiondOrchestrator;
-use sui_keys::keystore::AccountKeystore;
-use sui_node::SuiNode;
-use sui_types::base_types::{ObjectID, ObjectRef, SuiAddress, TransactionDigest};
+use sui_macros::sim_test;
+use sui_types::crypto::{get_key_pair, AccountKeyPair};
 use sui_types::messages::{
     ExecuteTransactionRequest, ExecuteTransactionRequestType, ExecuteTransactionResponse,
-    QuorumDriverRequest, QuorumDriverRequestType, VerifiedTransaction,
+    FinalizedEffects, TransactionData, VerifiedTransaction,
 };
-use test_utils::messages::{
-    make_counter_increment_transaction_with_wallet_context, make_transactions_with_wallet_context,
+use sui_types::object::generate_test_gas_objects_with_owner;
+use sui_types::quorum_driver_types::QuorumDriverError;
+use sui_types::utils::to_sender_signed_transaction;
+use test_utils::authority::{
+    spawn_fullnode, spawn_test_authorities, test_authority_configs,
+    test_authority_configs_with_objects,
 };
+use test_utils::messages::make_transactions_with_wallet_context;
+use test_utils::network::wait_for_nodes_transition_to_epoch;
 use test_utils::network::TestClusterBuilder;
-use test_utils::transaction::{
-    increment_counter, publish_basics_package_and_make_counter, wait_for_all_txes, wait_for_tx,
-};
+use test_utils::transaction::wait_for_tx;
 use tracing::info;
 
-#[tokio::test]
+#[sim_test]
 async fn test_blocking_execution() -> Result<(), anyhow::Error> {
     let mut test_cluster = TestClusterBuilder::new().build().await?;
     let context = &mut test_cluster.wallet;
     let node = &test_cluster.fullnode_handle.sui_node;
 
-    let active = node.active();
-
-    // Disable node sync process
-    active.cancel_node_sync_process_for_tests().await;
-
-    let net = active.agg_aggregator();
-    let node_sync_handle = active.clone().node_sync_handle();
-    let orchestrator =
-        TransactiondOrchestrator::new(net, node.state(), node_sync_handle, &Registry::new());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let reconfig_channel = node.subscribe_to_epoch_change();
+    let orchestrator = TransactiondOrchestrator::new_with_network_clients(
+        node.state(),
+        reconfig_channel,
+        temp_dir.path(),
+        &Registry::new(),
+    )
+    .await
+    .unwrap();
 
     let txn_count = 4;
     let mut txns = make_transactions_with_wallet_context(context, txn_count).await;
@@ -50,14 +53,11 @@ async fn test_blocking_execution() -> Result<(), anyhow::Error> {
     let digest = *txn.digest();
     orchestrator
         .quorum_driver()
-        .execute_transaction(QuorumDriverRequest {
-            transaction: txn,
-            request_type: QuorumDriverRequestType::WaitForEffectsCert,
-        })
-        .await
-        .unwrap_or_else(|e| panic!("Failed to execute transaction {:?}: {:?}", digest, e));
-    // Since node sync is turned off, this node does not know about this txn
-    assert!(node.state().get_transaction(digest).await.is_err());
+        .submit_transaction_no_ticket(txn)
+        .await?;
+
+    // Wait for data sync to catch up
+    wait_for_tx(digest, node.state().clone()).await;
 
     // Transaction Orchestrator proactivcely executes txn locally
     let txn = txns.swap_remove(0);
@@ -68,243 +68,238 @@ async fn test_blocking_execution() -> Result<(), anyhow::Error> {
         txn,
         ExecuteTransactionRequestType::WaitForLocalExecution,
     )
-    .await;
+    .await
+    .unwrap_or_else(|e| panic!("Failed to execute transaction {:?}: {:?}", digest, e));
 
-    if let ExecuteTransactionResponse::EffectsCert(result) = res {
-        let (_, _, executed_locally) = *result;
-        assert!(executed_locally);
-    };
+    let ExecuteTransactionResponse::EffectsCert(result) = res;
+    let (_, _, executed_locally) = *result;
+    assert!(executed_locally);
 
-    // This node knows about this txn even though node sync is toggled off.
-    assert!(node.state().get_transaction(digest).await.is_ok());
+    assert!(node
+        .state()
+        .get_executed_transaction_and_effects(digest)
+        .await
+        .is_ok());
 
     Ok(())
 }
 
-#[tokio::test]
-async fn test_non_blocking_execution() -> Result<(), anyhow::Error> {
-    let mut test_cluster = TestClusterBuilder::new().build().await?;
-    let context = &mut test_cluster.wallet;
+#[sim_test]
+async fn test_fullnode_wal_log() -> Result<(), anyhow::Error> {
+    telemetry_subscribers::init_for_testing();
+    let mut test_cluster = TestClusterBuilder::new()
+        .with_epoch_duration_ms(600000)
+        .build()
+        .await?;
+
     let node = &test_cluster.fullnode_handle.sui_node;
 
-    let active = node.active();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let reconfig_channel = node.subscribe_to_epoch_change();
+    tokio::task::yield_now().await;
+    let orchestrator = TransactiondOrchestrator::new_with_network_clients(
+        node.state(),
+        reconfig_channel,
+        temp_dir.path(),
+        &Registry::new(),
+    )
+    .await
+    .unwrap();
 
-    // Disable node sync process
-    active.cancel_node_sync_process_for_tests().await;
-
-    let net = active.agg_aggregator();
-    let node_sync_handle = active.clone().node_sync_handle();
-    let orchestrator =
-        TransactiondOrchestrator::new(net, node.state(), node_sync_handle, &Registry::new());
-
-    let txn_count = 4;
+    let txn_count = 2;
+    let context = &mut test_cluster.wallet;
     let mut txns = make_transactions_with_wallet_context(context, txn_count).await;
     assert!(
         txns.len() >= txn_count,
         "Expect at least {} txns. Do we generate enough gas objects during genesis?",
         txn_count,
     );
-
-    // Test ImmediateReturn and WaitForTxCert eventually are executed too
+    // As a comparison, we first verify a tx can go through
     let txn = txns.swap_remove(0);
-    let digest1 = *txn.digest();
-
+    let digest = *txn.digest();
     execute_with_orchestrator(
         &orchestrator,
         txn,
-        ExecuteTransactionRequestType::ImmediateReturn,
-    )
-    .await;
-
-    let txn = txns.swap_remove(0);
-    let digest2 = *txn.digest();
-    execute_with_orchestrator(
-        &orchestrator,
-        txn,
-        ExecuteTransactionRequestType::WaitForTxCert,
-    )
-    .await;
-
-    let txn = txns.swap_remove(0);
-    let digest3 = *txn.digest();
-    execute_with_orchestrator(
-        &orchestrator,
-        txn,
-        ExecuteTransactionRequestType::WaitForEffectsCert,
-    )
-    .await;
-
-    let digests = vec![digest1, digest2, digest3];
-    wait_for_all_txes(digests.clone(), node.state().clone()).await;
-    node_knows_txes(node, &digests).await;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_local_execution_with_missing_parents() -> Result<(), anyhow::Error> {
-    telemetry_subscribers::init_for_testing();
-    let mut test_cluster = TestClusterBuilder::new().build().await?;
-
-    let fullnode_handle = test_cluster.start_fullnode().await.unwrap();
-    // Note this node is different from the one connected with WalletContext
-    let node = &fullnode_handle.sui_node;
-
-    let context = &mut test_cluster.wallet;
-    let wallet_context_node = &test_cluster.fullnode_handle.sui_node;
-
-    let active = node.active();
-
-    // Disable node sync process
-    active.cancel_node_sync_process_for_tests().await;
-
-    let net = active.agg_aggregator();
-    let node_sync_handle = active.clone().node_sync_handle();
-    let orchestrator =
-        TransactiondOrchestrator::new(net, node.state(), node_sync_handle, &Registry::new());
-
-    let signer = context.config.keystore.addresses().get(0).cloned().unwrap();
-    let (pkg_ref, counter_id) = publish_basics_package_and_make_counter(context, signer).await;
-    let counter_shared_at = counter_id.1;
-
-    // 0. Execute transaction through Quorum Driver
-    info!("Execute with a Quorum Driver");
-    let digests0 = increment(context, &signer, counter_id.0, 20, pkg_ref).await;
-    // Since the node sync process is disabled, the node does not know about these txns
-    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-    node_does_not_know_txes(node, &digests0).await;
-
-    let tx0 = make_counter_increment_transaction_with_wallet_context(
-        context,
-        signer,
-        counter_id.0,
-        counter_shared_at,
-        None,
-    )
-    .await;
-    let digest0 = *tx0.digest();
-    // Then we use this node's Quorum Driver to submit transaction.
-    orchestrator
-        .quorum_driver()
-        .execute_transaction(QuorumDriverRequest {
-            transaction: tx0,
-            request_type: QuorumDriverRequestType::WaitForTxCert,
-        })
-        .await
-        .unwrap_or_else(|e| panic!("Failed to execute transaction {:?}: {:?}", digest0, e));
-
-    // Even though tx0 is **not** executed from the Orchestrator,
-    // it subscribes to the Quorum Driver's effects queue,
-    // receives the finalized transactions and executes them.
-    // Wait for the async execution to finish
-    wait_for_tx(digest0, node.state().clone()).await;
-    node_knows_txes(node, &digests0).await;
-    node_knows_txes(node, &vec![digest0]).await;
-
-    // 1. Execute with Orchestrator, WaitForLocalExecution
-    info!("Execute with Orchestrator, WaitForLocalExecution");
-
-    // We wait until the wallet context node knows about digest0 so it can pick the right gas
-    wait_for_tx(digest0, wallet_context_node.state().clone()).await;
-    let digests1 = increment(context, &signer, counter_id.0, 20, pkg_ref).await;
-
-    let tx1 = make_counter_increment_transaction_with_wallet_context(
-        context,
-        signer,
-        counter_id.0,
-        counter_shared_at,
-        None,
-    )
-    .await;
-    let digest1 = *tx1.digest();
-    // WaitForLocalExecution synchronuously executes all previous txns
-    let res = execute_with_orchestrator(
-        &orchestrator,
-        tx1,
         ExecuteTransactionRequestType::WaitForLocalExecution,
     )
-    .await;
-    if let ExecuteTransactionResponse::EffectsCert(result) = res {
-        let (_, _, executed_locally) = *result;
-        assert!(executed_locally);
-    };
-    node_knows_txes(node, &digests1).await;
-    node_knows_txes(node, &vec![digest1]).await;
+    .await
+    .unwrap_or_else(|e| panic!("Failed to execute transaction {:?}: {:?}", digest, e));
 
-    // 2. Execute with Orchestrator, ImmediateReturn
-    info!("Execute with Orchestrator, ImmediateReturn");
+    let validator_addresses = test_cluster.get_validator_addresses();
+    assert_eq!(validator_addresses.len(), 4);
 
-    // We wait until the wallet context node knows about digest1 so it can pick the right gas
-    wait_for_tx(digest1, wallet_context_node.state().clone()).await;
-    let digests2 = increment(context, &signer, counter_id.0, 20, pkg_ref).await;
-    node_does_not_know_txes(node, &digests2).await;
+    // Stop 2 validators and we lose quorum
+    test_cluster.stop_validator(validator_addresses[0]);
+    test_cluster.stop_validator(validator_addresses[1]);
 
-    let tx2 = make_counter_increment_transaction_with_wallet_context(
-        context,
-        signer,
-        counter_id.0,
-        counter_shared_at,
-        None,
-    )
-    .await;
-    // ImmediateReturn does not wait for execution results. But the execution asynchronuously triggers
-    // all dependencies to be executed as well.
-    let digest2 = *tx2.digest();
+    let txn = txns.swap_remove(0);
+    // Expect tx to fail
     execute_with_orchestrator(
         &orchestrator,
-        tx2,
-        ExecuteTransactionRequestType::ImmediateReturn,
+        txn.clone(),
+        ExecuteTransactionRequestType::WaitForLocalExecution,
     )
-    .await;
+    .await
+    .unwrap_err();
 
-    // Wait for the async execution to finish
-    wait_for_tx(digest2, node.state().clone()).await;
-    node_knows_txes(node, &digests2).await;
+    // Because the tx did not go through, we expect to see it in the WAL log
+    let pending_txes = orchestrator.load_all_pending_transactions();
+    assert_eq!(pending_txes, vec![txn.clone()]);
+
+    // Bring up 1 validator, we obtain quorum again and tx should succeed
+    test_cluster.start_validator(validator_addresses[0]).await;
+    tokio::task::yield_now().await;
+    execute_with_orchestrator(
+        &orchestrator,
+        txn,
+        ExecuteTransactionRequestType::WaitForLocalExecution,
+    )
+    .await
+    .unwrap();
+
+    // TODO: wal erasing is done in the loop handling effects, so may have some delay.
+    // However, once the refactoring is completed the wal removal will be done before
+    // response is returned and we will not need the sleep.
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    // The tx should be erased in wal log.
+    let pending_txes = orchestrator.load_all_pending_transactions();
+    assert!(pending_txes.is_empty());
 
     Ok(())
 }
 
-async fn increment(
-    context: &WalletContext,
-    signer: &SuiAddress,
-    counter_id: ObjectID,
-    delta: usize,
-    pkg_ref: ObjectRef,
-) -> Vec<TransactionDigest> {
-    let mut digests = Vec::with_capacity(delta);
-    for _ in 0..delta {
-        let digest = increment_counter(context, *signer, None, pkg_ref, counter_id)
-            .await
-            .0
-            .transaction_digest;
-        digests.push(digest);
+#[sim_test]
+async fn test_transaction_orchestrator_reconfig() {
+    telemetry_subscribers::init_for_testing();
+    let config = test_authority_configs();
+    let authorities = spawn_test_authorities(&config).await;
+    let fullnode = spawn_fullnode(&config, None).await;
+    let epoch = fullnode.with(|node| {
+        node.transaction_orchestrator()
+            .unwrap()
+            .quorum_driver()
+            .current_epoch()
+    });
+    assert_eq!(epoch, 0);
+
+    for handle in &authorities {
+        handle
+            .with_async(|node| async { node.close_epoch_for_testing().await.unwrap() })
+            .await;
     }
-    digests
+
+    // Wait for all nodes to reach the next epoch.
+    wait_for_nodes_transition_to_epoch(authorities.iter().chain(std::iter::once(&fullnode)), 1)
+        .await;
+
+    // Give it some time for the update to happen
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    fullnode.with(|node| {
+        let epoch = node
+            .transaction_orchestrator()
+            .unwrap()
+            .quorum_driver()
+            .current_epoch();
+        assert_eq!(epoch, 1);
+        assert_eq!(
+            node.clone_authority_aggregator().unwrap().committee.epoch,
+            1
+        );
+    });
 }
 
-async fn node_knows_txes(node: &SuiNode, digests: &Vec<TransactionDigest>) {
-    for digest in digests {
-        assert!(node.state().get_transaction(*digest).await.is_ok());
-    }
-}
+#[sim_test]
+async fn test_tx_across_epoch_boundaries() {
+    telemetry_subscribers::init_for_testing();
+    let total_tx_cnt = 1;
+    let (sender, keypair) = get_key_pair::<AccountKeyPair>();
+    let gas_objects = generate_test_gas_objects_with_owner(1, sender);
+    let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<FinalizedEffects>(total_tx_cnt);
 
-async fn node_does_not_know_txes(node: &SuiNode, digests: &Vec<TransactionDigest>) {
-    for digest in digests {
-        assert!(node.state().get_transaction(*digest).await.is_err());
+    let (config, mut gas_objects) = test_authority_configs_with_objects(gas_objects);
+    let authorities = spawn_test_authorities(&config).await;
+    let fullnode = spawn_fullnode(&config, None).await;
+    let gas_object = gas_objects.swap_remove(0);
+    let data = TransactionData::new_transfer_sui_with_dummy_gas_price(
+        get_key_pair::<AccountKeyPair>().0,
+        sender,
+        None,
+        gas_object.compute_object_reference(),
+        5000,
+    );
+    let tx = to_sender_signed_transaction(data, &keypair);
+
+    // We first let 2 validators stop accepting user cert
+    // to make sure QD does not get quorum until reconfig
+    for handle in authorities.iter().take(2) {
+        handle
+            .with_async(|node| async { node.close_epoch_for_testing().await.unwrap() })
+            .await;
     }
+
+    // Spawn a task that fire the transaction through TransactionOrchestrator
+    // across the epoch boundary.
+    fullnode
+        .with_async(|node| async {
+            let to = node.transaction_orchestrator().unwrap();
+            let tx_digest = *tx.digest();
+            info!(?tx_digest, "Submitting tx");
+            let tx = tx.into_inner();
+            tokio::task::spawn(async move {
+                match to
+                    .execute_transaction(ExecuteTransactionRequest {
+                        transaction: tx.clone(),
+                        request_type: ExecuteTransactionRequestType::WaitForEffectsCert,
+                    })
+                    .await
+                {
+                    Ok(ExecuteTransactionResponse::EffectsCert(res)) => {
+                        info!(?tx_digest, "tx result: ok");
+                        let (effects_cert, _, _) = *res;
+                        result_tx.send(effects_cert).await.unwrap();
+                    }
+                    Err(QuorumDriverError::TimeoutBeforeFinality) => {
+                        info!(?tx_digest, "tx result: timeout and will retry")
+                    }
+                    Err(other) => panic!("unexpected error: {:?}", other),
+                }
+            });
+        })
+        .await;
+
+    info!("Asking remaining validators to change epoch");
+    // Ask the remaining 2 validators to close epoch
+    for handle in authorities.iter().skip(2) {
+        handle
+            .with_async(|node| async { node.close_epoch_for_testing().await.unwrap() })
+            .await;
+    }
+
+    // Wait for all nodes to reach the next epoch.
+    info!("Now waiting for all nodes including fullnode to finish epoch change");
+    wait_for_nodes_transition_to_epoch(authorities.iter(), 1).await;
+    info!("Validators finished epoch change");
+    wait_for_nodes_transition_to_epoch(std::iter::once(&fullnode), 1).await;
+    info!("All nodes including fullnode finished");
+
+    // The transaction must finalize in epoch 1
+    let start = std::time::Instant::now();
+    match tokio::time::timeout(tokio::time::Duration::from_secs(15), result_rx.recv()).await {
+        Ok(Some(effects_cert)) if effects_cert.epoch() == 1 => (),
+        other => panic!("unexpected error: {:?}", other),
+    }
+    info!("test completed in {:?}", start.elapsed());
 }
 
 async fn execute_with_orchestrator(
     orchestrator: &TransactiondOrchestrator<NetworkAuthorityClient>,
     txn: VerifiedTransaction,
     request_type: ExecuteTransactionRequestType,
-) -> ExecuteTransactionResponse {
-    let digest = *txn.digest();
+) -> Result<ExecuteTransactionResponse, QuorumDriverError> {
     orchestrator
         .execute_transaction(ExecuteTransactionRequest {
             transaction: txn.into(),
             request_type,
         })
         .await
-        .unwrap_or_else(|e| panic!("Failed to execute transaction {:?}: {:?}", digest, e))
 }

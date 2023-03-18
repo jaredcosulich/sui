@@ -1,17 +1,21 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+mod address;
 mod crypto;
 mod dynamic_field;
 mod event;
 mod object;
 pub mod object_runtime;
 mod test_scenario;
+mod test_utils;
 mod transfer;
 mod tx_context;
 mod types;
+mod validator;
 
 use crate::make_native;
+use better_any::{Tid, TidAble};
 use move_binary_format::errors::{PartialVMError, PartialVMResult};
 use move_core_types::{account_address::AccountAddress, identifier::Identifier};
 use move_stdlib::natives::{GasParameters, NurseryGasParameters};
@@ -21,13 +25,82 @@ use move_vm_types::{
     values::{Struct, Value},
 };
 use std::sync::Arc;
+use sui_protocol_config::ProtocolConfig;
+
+use self::{
+    address::{AddressFromBytesCostParams, AddressFromU256CostParams, AddressToU256CostParams},
+    crypto::{bls12381, ecdsa_k1, ecdsa_r1, ecvrf, ed25519, groth16, hash, hmac},
+    event::EventEmitCostParams,
+};
+
+#[derive(Tid)]
+pub struct NativesCostTable {
+    pub address_from_bytes_cost_params: AddressFromBytesCostParams,
+    pub address_to_u256_cost_params: AddressToU256CostParams,
+    pub address_from_u256_cost_params: AddressFromU256CostParams,
+    pub event_emit_cost_params: EventEmitCostParams,
+}
+
+impl NativesCostTable {
+    pub fn from_protocol_config(protocol_config: &ProtocolConfig) -> NativesCostTable {
+        Self {
+            address_from_bytes_cost_params: AddressFromBytesCostParams {
+                copy_bytes_to_address_cost_per_byte: protocol_config
+                    .copy_bytes_to_address_cost_per_byte()
+                    .into(),
+            },
+            address_to_u256_cost_params: AddressToU256CostParams {
+                address_to_vec_cost_per_byte: protocol_config.address_to_vec_cost_per_byte().into(),
+                address_vec_reverse_cost_per_byte: protocol_config
+                    .address_vec_reverse_cost_per_byte()
+                    .into(),
+                copy_convert_to_u256_cost_per_byte: protocol_config
+                    .copy_convert_to_u256_cost_per_byte()
+                    .into(),
+            },
+            address_from_u256_cost_params: AddressFromU256CostParams {
+                u256_to_bytes_to_vec_cost_per_byte: protocol_config
+                    .u256_to_bytes_to_vec_cost_per_byte()
+                    .into(),
+                u256_bytes_vec_reverse_cost_per_byte: protocol_config
+                    .u256_bytes_vec_reverse_cost_per_byte()
+                    .into(),
+                copy_convert_to_address_cost_per_byte: protocol_config
+                    .u256_bytes_vec_reverse_cost_per_byte()
+                    .into(),
+            },
+            event_emit_cost_params: EventEmitCostParams {
+                event_value_size_derivation_cost_per_byte: protocol_config
+                    .event_value_size_derivation_cost_per_byte()
+                    .into(),
+                event_tag_size_derivation_cost_per_byte: protocol_config
+                    .event_tag_size_derivation_cost_per_byte()
+                    .into(),
+                event_emit_cost_per_byte: protocol_config.event_emit_cost_per_byte().into(),
+            },
+        }
+    }
+}
 
 pub fn all_natives(
     move_stdlib_addr: AccountAddress,
     sui_framework_addr: AccountAddress,
 ) -> NativeFunctionTable {
     let sui_natives: &[(&str, &str, NativeFunction)] = &[
-        ("ecdsa", "ecrecover", make_native!(crypto::ecrecover)),
+        ("address", "from_bytes", make_native!(address::from_bytes)),
+        ("address", "to_u256", make_native!(address::to_u256)),
+        ("address", "from_u256", make_native!(address::from_u256)),
+        ("hash", "blake2b256", make_native!(hash::blake2b256)),
+        (
+            "bls12381",
+            "bls12381_min_sig_verify",
+            make_native!(bls12381::bls12381_min_sig_verify),
+        ),
+        (
+            "bls12381",
+            "bls12381_min_pk_verify",
+            make_native!(bls12381::bls12381_min_pk_verify),
+        ),
         (
             "dynamic_field",
             "hash_type_and_key",
@@ -64,78 +137,59 @@ pub fn all_natives(
             make_native!(dynamic_field::has_child_object_with_ty),
         ),
         (
-            "ecdsa",
+            "ecdsa_k1",
+            "secp256k1_ecrecover",
+            make_native!(ecdsa_k1::ecrecover),
+        ),
+        (
+            "ecdsa_k1",
             "decompress_pubkey",
-            make_native!(crypto::decompress_pubkey),
+            make_native!(ecdsa_k1::decompress_pubkey),
         ),
-        ("ecdsa", "keccak256", make_native!(crypto::keccak256)),
         (
-            "ecdsa",
+            "ecdsa_k1",
             "secp256k1_verify",
-            make_native!(crypto::secp256k1_verify),
+            make_native!(ecdsa_k1::secp256k1_verify),
+        ),
+        ("ecvrf", "ecvrf_verify", make_native!(ecvrf::ecvrf_verify)),
+        (
+            "ecdsa_r1",
+            "secp256r1_ecrecover",
+            make_native!(ecdsa_r1::ecrecover),
         ),
         (
-            "bls12381",
-            "bls12381_min_sig_verify",
-            make_native!(crypto::bls12381_min_sig_verify),
+            "ecdsa_r1",
+            "secp256r1_verify",
+            make_native!(ecdsa_r1::secp256r1_verify),
         ),
         (
-            "bls12381",
-            "bls12381_min_pk_verify",
-            make_native!(crypto::bls12381_min_pk_verify),
+            "ed25519",
+            "ed25519_verify",
+            make_native!(ed25519::ed25519_verify),
         ),
         ("event", "emit", make_native!(event::emit)),
         (
-            "object",
-            "address_from_bytes",
-            make_native!(object::address_from_bytes),
+            "groth16",
+            "verify_groth16_proof_internal",
+            make_native!(groth16::verify_groth16_proof_internal),
         ),
+        (
+            "groth16",
+            "prepare_verifying_key_internal",
+            make_native!(groth16::prepare_verifying_key_internal),
+        ),
+        (
+            "hmac",
+            "native_hmac_sha3_256",
+            make_native!(hmac::hmac_sha3_256),
+        ),
+        ("hash", "keccak256", make_native!(hash::keccak256)),
         ("object", "delete_impl", make_native!(object::delete_impl)),
         ("object", "borrow_uid", make_native!(object::borrow_uid)),
         (
             "object",
             "record_new_uid",
             make_native!(object::record_new_uid),
-        ),
-        (
-            "bulletproofs",
-            "native_verify_full_range_proof",
-            make_native!(crypto::verify_range_proof),
-        ),
-        (
-            "elliptic_curve",
-            "native_add_ristretto_point",
-            make_native!(crypto::add_ristretto_point),
-        ),
-        (
-            "elliptic_curve",
-            "native_subtract_ristretto_point",
-            make_native!(crypto::subtract_ristretto_point),
-        ),
-        (
-            "elliptic_curve",
-            "native_create_pedersen_commitment",
-            make_native!(crypto::pedersen_commit),
-        ),
-        (
-            "elliptic_curve",
-            "native_scalar_from_u64",
-            make_native!(crypto::scalar_from_u64),
-        ),
-        (
-            "elliptic_curve",
-            "native_scalar_from_bytes",
-            make_native!(crypto::scalar_from_bytes),
-        ),
-        (
-            "ed25519",
-            "ed25519_verify",
-            make_native!(crypto::ed25519_verify),
-        ),
-        (
-            "hmac",
-            "native_hmac_sha3_256",
-            make_native!(crypto::hmac_sha3_256),
         ),
         (
             "test_scenario",
@@ -218,14 +272,15 @@ pub fn all_natives(
             make_native!(types::is_one_time_witness),
         ),
         (
-            "groth16",
-            "verify_groth16_proof_internal",
-            make_native!(crypto::verify_groth16_proof_internal),
+            "validator",
+            "validate_metadata_bcs",
+            make_native!(validator::validate_metadata_bcs),
         ),
+        ("test_utils", "destroy", make_native!(test_utils::destroy)),
         (
-            "groth16",
-            "prepare_verifying_key",
-            make_native!(crypto::prepare_verifying_key),
+            "test_utils",
+            "create_one_time_witness",
+            make_native!(test_utils::create_one_time_witness),
         ),
     ];
     sui_natives

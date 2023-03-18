@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 use crate::block_synchronizer::handler::Handler;
 use anyhow::Result;
-use config::SharedWorkerCache;
+use config::WorkerCache;
 use crypto::PublicKey;
 use fastcrypto::hash::Hash;
 use futures::{
     stream::{FuturesOrdered, StreamExt as _},
     FutureExt,
 };
-use network::{P2pNetwork, WorkerRpc};
+use network::WorkerRpc;
 use std::{collections::HashSet, sync::Arc};
 
 use tracing::{debug, instrument};
@@ -41,10 +41,10 @@ pub struct BlockWaiter<SynchronizerHandler: Handler + Send + Sync + 'static> {
     name: PublicKey,
 
     /// The worker information cache.
-    worker_cache: SharedWorkerCache,
+    worker_cache: WorkerCache,
 
     /// Network driver allowing to send messages.
-    worker_network: P2pNetwork,
+    worker_network: anemo::Network,
 
     /// We use the handler of the block synchronizer to interact with the
     /// block synchronizer in a synchronous way. Share a reference of this
@@ -56,8 +56,8 @@ impl<SynchronizerHandler: Handler + Send + Sync + 'static> BlockWaiter<Synchroni
     #[must_use]
     pub fn new(
         name: PublicKey,
-        worker_cache: SharedWorkerCache,
-        worker_network: P2pNetwork,
+        worker_cache: WorkerCache,
+        worker_network: anemo::Network,
         block_synchronizer_handler: Arc<SynchronizerHandler>,
     ) -> BlockWaiter<SynchronizerHandler> {
         Self {
@@ -126,11 +126,10 @@ impl<SynchronizerHandler: Handler + Send + Sync + 'static> BlockWaiter<Synchroni
             .header
             .payload
             .iter()
-            .map(|(batch_digest, worker_id)| {
+            .map(|(batch_digest, (worker_id, _))| {
                 debug!("Sending batch {batch_digest} request to worker id {worker_id}");
                 let worker_name = self
                     .worker_cache
-                    .load()
                     .worker(&self.name, worker_id)
                     .expect("Worker id not found")
                     .name;

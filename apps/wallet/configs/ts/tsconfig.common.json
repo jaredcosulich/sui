@@ -45,11 +45,12 @@
             "_font-icons/*": ["./font-icons/*"],
             "@mysten/sui.js": ["../../sdk/typescript/src/"],
             "@mysten/bcs": ["../../sdk/bcs/src/"],
+            "@mysten/ledgerjs-hw-app-sui": ["../../sdk/ledgerjs-hw-app-sui"],
             "@mysten/wallet-standard": [
-                "../../sdk/wallet-adapter/packages/wallet-standard/src/"
+                "../../sdk/wallet-adapter/wallet-standard/src/"
             ]
         }
     },
-    "include": ["../../src"],
+    "include": ["../../src", "../../tests"],
     "exclude": ["../../build", "../../node_modules"]
 }

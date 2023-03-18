@@ -28,24 +28,23 @@ struct Args {
     // #[clap(short, long, parse(from_os_str), value_hint = ValueHint::DirPath)]
     // config: Option<std::path::PathBuf>,
     /// Port to start the Fullnode RPC server on
-    /// Port to start the Gateway RPC server on
-    #[clap(long, default_value = "5001")]
-    gateway_rpc_port: u16,
-
     #[clap(long, default_value = "9000")]
     fullnode_rpc_port: u16,
 
     /// Port to start the Sui faucet on
     #[clap(long, default_value = "9123")]
     faucet_port: u16,
+
+    /// The duration for epochs (defaults to one minute)
+    #[clap(long, default_value = "60000")]
+    epoch_duration_ms: u64,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let (_guard, _filter_handle) =
-        telemetry_subscribers::TelemetryConfig::new(env!("CARGO_BIN_NAME"))
-            .with_env()
-            .init();
+    let (_guard, _filter_handle) = telemetry_subscribers::TelemetryConfig::new()
+        .with_env()
+        .init();
 
     let args = Args::parse();
 
@@ -53,6 +52,7 @@ async fn main() -> Result<()> {
         env: Env::NewLocal,
         fullnode_address: Some(format!("127.0.0.1:{}", args.fullnode_rpc_port)),
         faucet_address: None,
+        epoch_duration_ms: Some(args.epoch_duration_ms),
     })
     .await?;
 
@@ -104,8 +104,8 @@ async fn health() -> &'static str {
 }
 
 async fn faucet_request(
-    Json(payload): Json<FaucetRequest>,
     Extension(state): Extension<Arc<AppState>>,
+    Json(payload): Json<FaucetRequest>,
 ) -> impl IntoResponse {
     let result = match payload {
         FaucetRequest::FixedAmountRequest(FixedAmountRequest { recipient }) => {

@@ -8,13 +8,16 @@ Sui object identifiers
 
 -  [Struct `ID`](#0x2_object_ID)
 -  [Struct `UID`](#0x2_object_UID)
+-  [Resource `Ownership`](#0x2_object_Ownership)
+-  [Resource `DynamicFields`](#0x2_object_DynamicFields)
 -  [Constants](#@Constants_0)
--  [Function `address_from_bytes`](#0x2_object_address_from_bytes)
+-  [Function `new_id`](#0x2_object_new_id)
 -  [Function `id_to_bytes`](#0x2_object_id_to_bytes)
 -  [Function `id_to_address`](#0x2_object_id_to_address)
 -  [Function `id_from_bytes`](#0x2_object_id_from_bytes)
 -  [Function `id_from_address`](#0x2_object_id_from_address)
 -  [Function `sui_system_state`](#0x2_object_sui_system_state)
+-  [Function `clock`](#0x2_object_clock)
 -  [Function `uid_as_inner`](#0x2_object_uid_as_inner)
 -  [Function `uid_to_inner`](#0x2_object_uid_to_inner)
 -  [Function `uid_to_bytes`](#0x2_object_uid_to_bytes)
@@ -32,6 +35,7 @@ Sui object identifiers
 
 
 <pre><code><b>use</b> <a href="">0x1::bcs</a>;
+<b>use</b> <a href="address.md#0x2_address">0x2::address</a>;
 <b>use</b> <a href="tx_context.md#0x2_tx_context">0x2::tx_context</a>;
 </code></pre>
 
@@ -76,7 +80,7 @@ as you want for a given <code>obj</code>, and each <code><a href="object.md#0x2_
 
 Globally unique IDs that define an object's ID in storage. Any Sui Object, that is a struct
 with the <code>key</code> ability, must have <code>id: <a href="object.md#0x2_object_UID">UID</a></code> as its first field.
-These are globaly unique in the sense that no two values of type <code><a href="object.md#0x2_object_UID">UID</a></code> are ever equal, in
+These are globally unique in the sense that no two values of type <code><a href="object.md#0x2_object_UID">UID</a></code> are ever equal, in
 other words for any two values <code>id1: <a href="object.md#0x2_object_UID">UID</a></code> and <code>id2: <a href="object.md#0x2_object_UID">UID</a></code>, <code>id1</code> != <code>id2</code>.
 This is a privileged type that can only be derived from a <code>TxContext</code>.
 <code><a href="object.md#0x2_object_UID">UID</a></code> doesn't have the <code>drop</code> ability, so deleting a <code><a href="object.md#0x2_object_UID">UID</a></code> requires a call to <code>delete</code>.
@@ -103,17 +107,80 @@ This is a privileged type that can only be derived from a <code>TxContext</code>
 
 </details>
 
+<a name="0x2_object_Ownership"></a>
+
+## Resource `Ownership`
+
+Ownership information for a given object (stored at the object's address)
+
+
+<pre><code><b>struct</b> <a href="object.md#0x2_object_Ownership">Ownership</a> <b>has</b> key
+</code></pre>
+
+
+
+<details>
+<summary>Fields</summary>
+
+
+<dl>
+<dt>
+<code>owner: <b>address</b></code>
+</dt>
+<dd>
+
+</dd>
+<dt>
+<code>status: u64</code>
+</dt>
+<dd>
+
+</dd>
+</dl>
+
+
+</details>
+
+<a name="0x2_object_DynamicFields"></a>
+
+## Resource `DynamicFields`
+
+List of fields with a given name type of an object containing fields (stored at the
+containing object's address)
+
+
+<pre><code><b>struct</b> <a href="object.md#0x2_object_DynamicFields">DynamicFields</a>&lt;K: <b>copy</b>, drop, store&gt; <b>has</b> key
+</code></pre>
+
+
+
+<details>
+<summary>Fields</summary>
+
+
+<dl>
+<dt>
+<code>names: <a href="">vector</a>&lt;K&gt;</code>
+</dt>
+<dd>
+
+</dd>
+</dl>
+
+
+</details>
+
 <a name="@Constants_0"></a>
 
 ## Constants
 
 
-<a name="0x2_object_EAddressParseError"></a>
+<a name="0x2_object_SUI_CLOCK_OBJECT_ID"></a>
 
-Error from <code>address_from_bytes</code> when it is supplied too many or too few bytes.
+The hardcoded ID for the singleton Clock Object.
 
 
-<pre><code><b>const</b> <a href="object.md#0x2_object_EAddressParseError">EAddressParseError</a>: u64 = 0;
+<pre><code><b>const</b> <a href="object.md#0x2_object_SUI_CLOCK_OBJECT_ID">SUI_CLOCK_OBJECT_ID</a>: <b>address</b> = 6;
 </code></pre>
 
 
@@ -128,15 +195,15 @@ The hardcoded ID for the singleton Sui System State Object.
 
 
 
-<a name="0x2_object_address_from_bytes"></a>
+<a name="0x2_object_new_id"></a>
 
-## Function `address_from_bytes`
+## Function `new_id`
 
-Convert raw bytes into an address, aborts if supplied too many
-or too few bytes.
+Create an <code><a href="object.md#0x2_object_ID">ID</a></code>. Not to be mistaken for <code><a href="object.md#0x2_object_new">object::new</a></code> which
+generates a new UID.
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="object.md#0x2_object_address_from_bytes">address_from_bytes</a>(bytes: <a href="">vector</a>&lt;u8&gt;): <b>address</b>
+<pre><code><b>public</b> <b>fun</b> <a href="object.md#0x2_object_new_id">new_id</a>(ctx: &<b>mut</b> <a href="tx_context.md#0x2_tx_context_TxContext">tx_context::TxContext</a>): <a href="object.md#0x2_object_ID">object::ID</a>
 </code></pre>
 
 
@@ -145,7 +212,9 @@ or too few bytes.
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>native</b> <b>fun</b> <a href="object.md#0x2_object_address_from_bytes">address_from_bytes</a>(bytes: <a href="">vector</a>&lt;u8&gt;): <b>address</b>;
+<pre><code><b>public</b> <b>fun</b> <a href="object.md#0x2_object_new_id">new_id</a>(ctx: &<b>mut</b> TxContext): <a href="object.md#0x2_object_ID">ID</a> {
+    <a href="object.md#0x2_object_ID">ID</a> { bytes: <a href="tx_context.md#0x2_tx_context_new_object">tx_context::new_object</a>(ctx) }
+}
 </code></pre>
 
 
@@ -219,7 +288,7 @@ Make an <code><a href="object.md#0x2_object_ID">ID</a></code> from raw bytes.
 
 
 <pre><code><b>public</b> <b>fun</b> <a href="object.md#0x2_object_id_from_bytes">id_from_bytes</a>(bytes: <a href="">vector</a>&lt;u8&gt;): <a href="object.md#0x2_object_ID">ID</a> {
-    <a href="object.md#0x2_object_id_from_address">id_from_address</a>(<a href="object.md#0x2_object_address_from_bytes">address_from_bytes</a>(bytes))
+    <a href="object.md#0x2_object_id_from_address">id_from_address</a>(address::from_bytes(bytes))
 }
 </code></pre>
 
@@ -272,6 +341,34 @@ This should only be called once from <code><a href="sui_system.md#0x2_sui_system
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="object.md#0x2_object_sui_system_state">sui_system_state</a>(): <a href="object.md#0x2_object_UID">UID</a> {
     <a href="object.md#0x2_object_UID">UID</a> {
         id: <a href="object.md#0x2_object_ID">ID</a> { bytes: <a href="object.md#0x2_object_SUI_SYSTEM_STATE_OBJECT_ID">SUI_SYSTEM_STATE_OBJECT_ID</a> },
+    }
+}
+</code></pre>
+
+
+
+</details>
+
+<a name="0x2_object_clock"></a>
+
+## Function `clock`
+
+Create the <code><a href="object.md#0x2_object_UID">UID</a></code> for the singleton <code>Clock</code> object.
+This should only be called once from <code><a href="clock.md#0x2_clock">clock</a></code>.
+
+
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="clock.md#0x2_clock">clock</a>(): <a href="object.md#0x2_object_UID">object::UID</a>
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="clock.md#0x2_clock">clock</a>(): <a href="object.md#0x2_object_UID">UID</a> {
+    <a href="object.md#0x2_object_UID">UID</a> {
+        id: <a href="object.md#0x2_object_ID">ID</a> { bytes: <a href="object.md#0x2_object_SUI_CLOCK_OBJECT_ID">SUI_CLOCK_OBJECT_ID</a> }
     }
 }
 </code></pre>
@@ -541,7 +638,7 @@ Get the inner bytes for the underlying <code><a href="object.md#0x2_object_ID">I
 Get the <code><a href="object.md#0x2_object_UID">UID</a></code> for <code>obj</code>.
 Safe because Sui has an extra bytecode verifier pass that forces every struct with
 the <code>key</code> ability to have a distinguished <code><a href="object.md#0x2_object_UID">UID</a></code> field.
-Cannot be made public as the access to <code><a href="object.md#0x2_object_UID">UID</a></code> for a given object must be privledged, and
+Cannot be made public as the access to <code><a href="object.md#0x2_object_UID">UID</a></code> for a given object must be privileged, and
 restrictable in the object's module.
 
 
@@ -609,6 +706,20 @@ Generate a new UID specifically used for creating a UID from a hash
 
 </details>
 
+<details>
+<summary>Specification</summary>
+
+
+
+<pre><code><b>pragma</b> opaque;
+<b>aborts_if</b> [abstract] <b>false</b>;
+<b>ensures</b> [abstract] !<b>exists</b>&lt;<a href="object.md#0x2_object_Ownership">Ownership</a>&gt;(id);
+</code></pre>
+
+
+
+</details>
+
 <a name="0x2_object_record_new_uid"></a>
 
 ## Function `record_new_uid`
@@ -625,6 +736,19 @@ Generate a new UID specifically used for creating a UID from a hash
 
 
 <pre><code><b>native</b> <b>fun</b> <a href="object.md#0x2_object_record_new_uid">record_new_uid</a>(id: <b>address</b>);
+</code></pre>
+
+
+
+</details>
+
+<details>
+<summary>Specification</summary>
+
+
+
+<pre><code><b>pragma</b> opaque;
+<b>aborts_if</b> [abstract] <b>true</b>;
 </code></pre>
 
 

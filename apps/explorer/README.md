@@ -12,22 +12,23 @@ Dependencies are managed using [`pnpm`](https://pnpm.io/). You can start by inst
 $ pnpm install
 ```
 
+> All `pnpm` commands are intended to be run in the root of the Sui repo. You can also run them within the `apps/explorer` directory, and remove change `pnpm explorer` to just `pnpm` when running commands.
+
+## Developing the Sui Explorer
+
+To start the explorer dev server, you can run the following command:
+
+```
+pnpm explorer dev
+```
+
+This will start the dev server on port 3000, which should be accessible on http://localhost:3000/
+
 # How to Switch Environment
 
 By default, the Sui Explorer attempts to connect to a local RPC server. For more information about using a local RPC server, see [Local RPC Server & JSON-RPC API Quick Start](../../doc/src/build/json-rpc.md).
 
 If you want to use the explorer with another network, you can select your preferred network in the header of the explorer.
-
-## Connecting to the Static Data
-
-The Sui Explorer can also connect to a local, static JSON dataset that can be found at `./src/utils/static/mock_data.json` and `./src/utils/static/owned_object.json`.
-
-For example, suppose we wish to locally run the website using the static JSON dataset and not the API, then we could run the following:
-
-```bash
-pnpm dev:static
-
-```
 
 ## To run end-to-end localnet test
 
@@ -37,35 +38,29 @@ Start validators locally:
 cargo run --bin sui-test-validator
 ```
 
-In a a separate terminal, start explorer:
+In a a separate terminal, you can now run the end-to-end tests:
 
 ```bash
-pnpm explorer dev
-```
-
-In a separate terminal, run cypress locally, this should open a chrome simulating all tests:
-
-```bash
-pnpm explorer exec cypress open
+pnpm explorer playwright test
 ```
 
 # Other pnpm commands
 
-### `pnpm test`
+### `pnpm explorer test`
 
 This runs a series of end-to-end browser tests using the website as connected to the static JSON dataset. This command is run by the GitHub checks. The tests must pass before merging a branch into main.
 
-### `pnpm build`
+### `pnpm explorer build`
 
 Builds the app for production to the `build` folder.
 
 It bundles React in production mode and optimizes the build for the best performance.
 
-### `pnpm lint`
+### `pnpm explorer lint`
 
-Run linting check (prettier/eslint/stylelint).
+Run linting check (prettier/eslint).
 
-### `pnpm lint:fix`
+### `pnpm explorer lint:fix`
 
 Run linting check but also try to fix any issues.
 

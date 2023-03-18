@@ -2,7 +2,57 @@
 title: Sui Documentation Updates
 ---
 
-This topic lists the significant updates to the [Sui documentation](https://docs.sui.io) site so that you can easily identify new or updated information. 
+This topic lists the significant updates to the [Sui documentation](https://docs.sui.io) site so that you can easily identify new or updated information.
+
+## Week ending 03/05/23
+
+| Topic | Update | 
+| :------ | :------- |
+| [Sui Exchange Integration Guide](../learn/exchange-integration-guide.md) | New topic that describes how to integrate Sui into a cryptocurrency exchange. Merged the Exchange Integration FAQ topic into the new topic. |
+
+## Week ending 02/23/23
+
+| Topic | Update | 
+| :------ | :------- |
+| [Sponsored Transactions](../learn/sponsored-transactions.md) | New topic for a new feature on Sui. |
+
+
+## Week ending 02/03/23
+
+| Topic | Update | 
+| :------ | :------- |
+| [Sui Client CLI](../build/cli-client.md) | [Updated content around sui client publish change](https://github.com/MystenLabs/sui/pull/7632) where verifying dependencies is now the default and an optional flag allows for skipping the verification. |
+
+## Week ending 12/25/22
+
+| Topic | Update | 
+| :------ | :------- |
+| [Sui Move by Example](../explore/move-examples/index.md) | [Relocated this content](https://github.com/MystenLabs/sui/pull/6957) from examples.sui.io to the Explore section of docs.sui.io. |
+| [Sui Framework Reference](../reference/framework/index.md) | [Added links to each module topic in the Framework Reference](https://github.com/MystenLabs/sui/pull/6958) folder in the repo until we can properly add them to the Docs site. |
+
+
+## Week ending 12/17/22
+
+| Topic | Update | 
+| :------ | :------- |
+| [Explore Sui](../explore/index.md) | Added [Sui Capys](https://docs.sui.io/) and [Satoshi Flip](https://satoshi-flip.sui.io/) apps. |
+| [Event API](../build/event_api.md) | [Copyedit and reformat for readability](https://github.com/MystenLabs/sui/pull/6718). |
+| [Connect to Devnet](../build/devnet.md) | [Copyedit and updates for style consistency](https://github.com/MystenLabs/sui/pull/6715/files#diff-33791b72aa9e90e09f1b9f85972b29b605e388dff5130b2cdd9417a6946c8012).
+| Multiple | Removed $ from example commands. Changed style for keyboard key names to use **bold** instead of `code` format. |
+
+
+## Week ending 12/10/22
+
+| Topic | Update | 
+| :------ | :------- |
+| [Exchange Integration FAQ](../learn/exchange-integration-faq.md) | New topic. |
+| [Sui Client CLI](../build/cli-client.md) | [Added the `--verify-dependencies` flag to Sui client `publish`](https://github.com/MystenLabs/sui/pull/6601). |
+
+## Week Ending 11/12/22
+
+| Topic | Update | 
+| :------ | :------- |
+| [Run a Sui Full node](../build/fullnode.md) | [Updated system requirements](https://github.com/MystenLabs/sui/pull/6033) for Full node. |
 
 ## Week ending 10/29/22
 
@@ -11,7 +61,6 @@ This topic lists the significant updates to the [Sui documentation](https://docs
 | [Reference](../reference) | Added a new Reference top-level node. Moved filed from the Reference section previously in the Build node. |
 | [Dynamic Fields](../build/programming-with-objects/ch5-dynamic-fields.md) | Docs for a new, more flexible, replacement for Child Objects.  **Note** this is an early release, with [known limitations](../build/programming-with-objects/ch5-dynamic-fields.md#current-limitations). |
 | [Collections](../build/programming-with-objects/ch6-collections.md) | New docs to accompany the addition of map-like collections to the Sui Framework's Move library, built on top of Dynamic Fields. **Note** this is an early release, with [known limitations](../build/programming-with-objects/ch6-collections.md#current-limitations). |
-
 
 ## Week ending 10/22/22
 
@@ -33,7 +82,6 @@ This topic lists the significant updates to the [Sui documentation](https://docs
 | :------ | :------- |
 | [Install Sui](../build/install.md) | Removed the setup script (sui-setup.sh) until we can resolve the errors with the latest version of Sui. |
 | [Explore Sui](../explore/index.md) | General copyedits for style, removed some stale images and examples. |
-
 
 ## Week ending 10/01/22
 

@@ -1,4 +1,6 @@
 # Copyright(C) Facebook, Inc. and its affiliates.
+# Copyright (c) Mysten Labs, Inc.
+# SPDX-License-Identifier: Apache-2.0
 from json import dump, load
 from collections import OrderedDict
 from benchmark.utils import multiaddr_to_url_data
@@ -6,20 +8,6 @@ from benchmark.utils import multiaddr_to_url_data
 
 class ConfigError(Exception):
     pass
-
-
-class Key:
-    def __init__(self, name, secret):
-        self.name = name
-        self.secret = secret
-
-    @classmethod
-    def from_file(cls, filename):
-        assert isinstance(filename, str)
-        with open(filename, 'r') as f:
-            data = load(f)
-        return cls(data['name'], data['secret'])
-
 
 class WorkerCache:
     ''' The worker cache looks as follows:
@@ -235,7 +223,8 @@ class LocalCommittee(Committee):
         assert all(isinstance(x, str) for x in names)
         assert isinstance(port, int)
         assert len(names) == len(network_names)
-        addresses = OrderedDict((name, (network_name, ['127.0.0.1'])) for name, network_name in zip(names, network_names))
+        addresses = OrderedDict((name, (network_name, [
+                                '127.0.0.1'])) for name, network_name in zip(names, network_names))
         super().__init__(addresses, port)
 
 
@@ -290,6 +279,11 @@ class BenchParameters:
             self.tx_size = int(json['tx_size'])
 
             self.duration = int(json['duration'])
+
+            if 'failpoints' in json:
+                self.failpoints = bool(json['failpoints'])
+            else:
+                self.failpoints = False
 
             self.runs = int(json['runs']) if 'runs' in json else 1
         except KeyError as e:

@@ -9,7 +9,6 @@ use anemo::PeerId;
 use crypto::traits::KeyPair as _;
 use fastcrypto::hash::Hash;
 use mockall::*;
-use network::P2pNetwork;
 use std::sync::Arc;
 use test_utils::{
     fixture_batch_with_transactions, fixture_payload, test_network, CommitteeFixture,
@@ -24,7 +23,7 @@ async fn test_successfully_retrieve_block() {
     // GIVEN
     let fixture = CommitteeFixture::builder().randomize_ports(true).build();
     let committee = fixture.committee();
-    let worker_cache = fixture.shared_worker_cache();
+    let worker_cache = fixture.worker_cache();
     let author = fixture.authorities().next().unwrap();
     let primary = fixture.authorities().nth(1).unwrap();
     let name = primary.public_key();
@@ -33,7 +32,7 @@ async fn test_successfully_retrieve_block() {
     let header = author
         .header_builder(&committee)
         .payload(fixture_payload(2))
-        .build(author.keypair())
+        .build()
         .unwrap();
     let certificate = fixture.certificate(&header);
     let digest = certificate.digest();
@@ -63,7 +62,7 @@ async fn test_successfully_retrieve_block() {
     let routes = anemo::Router::new().add_rpc_service(WorkerToWorkerServer::new(mock_server));
     let _worker_network = worker.new_network(routes);
 
-    let address = network::multiaddr_to_address(worker_address).unwrap();
+    let address = worker_address.to_anemo_address().unwrap();
     let peer_id = PeerId(worker_name.0.to_bytes());
     network
         .connect_with_peer_id(address, peer_id)
@@ -85,12 +84,8 @@ async fn test_successfully_retrieve_block() {
         .return_const(vec![Ok(certificate)]);
 
     // WHEN we send a request to get a block
-    let block_waiter = BlockWaiter::new(
-        name.clone(),
-        worker_cache,
-        P2pNetwork::new(network),
-        Arc::new(mock_handler),
-    );
+    let block_waiter =
+        BlockWaiter::new(name.clone(), worker_cache, network, Arc::new(mock_handler));
     let mut response = block_waiter.get_blocks(vec![digest]).await.unwrap();
 
     // THEN we should expect to get back the correct result
@@ -108,7 +103,7 @@ async fn test_successfully_retrieve_multiple_blocks() {
     // GIVEN
     let fixture = CommitteeFixture::builder().randomize_ports(true).build();
     let committee = fixture.committee();
-    let worker_cache = fixture.shared_worker_cache();
+    let worker_cache = fixture.worker_cache();
     let author = fixture.authorities().next().unwrap();
     let primary = fixture.authorities().nth(1).unwrap();
     let name = primary.public_key();
@@ -132,8 +127,8 @@ async fn test_successfully_retrieve_multiple_blocks() {
         let batch_2 = fixture_batch_with_transactions(10);
 
         builder = builder
-            .with_payload_batch(batch_1.clone(), worker_id)
-            .with_payload_batch(batch_2.clone(), worker_id);
+            .with_payload_batch(batch_1.clone(), worker_id, 0)
+            .with_payload_batch(batch_2.clone(), worker_id, 0);
 
         for b in [batch_1.clone(), batch_2.clone()] {
             let digest = b.digest();
@@ -163,8 +158,8 @@ async fn test_successfully_retrieve_multiple_blocks() {
         // batches will be used)
         if i > 5 {
             builder = builder
-                .with_payload_batch(common_batch_1.clone(), worker_id)
-                .with_payload_batch(common_batch_2.clone(), worker_id);
+                .with_payload_batch(common_batch_1.clone(), worker_id, 0)
+                .with_payload_batch(common_batch_2.clone(), worker_id, 0);
 
             for b in [common_batch_1.clone(), common_batch_2.clone()] {
                 let digest = b.digest();
@@ -191,7 +186,7 @@ async fn test_successfully_retrieve_multiple_blocks() {
         // sort the batches to make sure that the response is the expected one.
         batches.sort_by(|a, b| a.digest.cmp(&b.digest));
 
-        let header = builder.build(author.keypair()).unwrap();
+        let header = builder.build().unwrap();
 
         let certificate = fixture.certificate(&header);
         certificates.push(certificate.clone());
@@ -228,7 +223,7 @@ async fn test_successfully_retrieve_multiple_blocks() {
     let routes = anemo::Router::new().add_rpc_service(WorkerToWorkerServer::new(mock_server));
     let _worker_network = worker.new_network(routes);
 
-    let address = network::multiaddr_to_address(worker_address).unwrap();
+    let address = worker_address.to_anemo_address().unwrap();
     let peer_id = PeerId(worker_name.0.to_bytes());
     network
         .connect_with_peer_id(address, peer_id)
@@ -257,12 +252,8 @@ async fn test_successfully_retrieve_multiple_blocks() {
         .return_const(expected_result);
 
     // WHEN we send a request to get a block
-    let block_waiter = BlockWaiter::new(
-        name.clone(),
-        worker_cache,
-        P2pNetwork::new(network),
-        Arc::new(mock_handler),
-    );
+    let block_waiter =
+        BlockWaiter::new(name.clone(), worker_cache, network, Arc::new(mock_handler));
     let response = block_waiter.get_blocks(digests).await.unwrap();
 
     // THEN we should expect to get back the correct result
@@ -273,7 +264,7 @@ async fn test_successfully_retrieve_multiple_blocks() {
 async fn test_return_error_when_certificate_is_missing() {
     // GIVEN
     let fixture = CommitteeFixture::builder().build();
-    let worker_cache = fixture.shared_worker_cache();
+    let worker_cache = fixture.worker_cache();
     let primary = fixture.authorities().nth(1).unwrap();
     let name = primary.public_key();
 
@@ -297,12 +288,8 @@ async fn test_return_error_when_certificate_is_missing() {
     let network = test_network(primary.network_keypair(), primary.address());
 
     // WHEN we send a request to get a block
-    let block_waiter = BlockWaiter::new(
-        name.clone(),
-        worker_cache,
-        P2pNetwork::new(network),
-        Arc::new(mock_handler),
-    );
+    let block_waiter =
+        BlockWaiter::new(name.clone(), worker_cache, network, Arc::new(mock_handler));
     let mut response = block_waiter.get_blocks(vec![digest]).await.unwrap();
 
     // THEN we should expect to get back the error
@@ -318,7 +305,7 @@ async fn test_return_error_when_certificate_is_missing() {
 async fn test_return_error_when_certificate_is_missing_when_get_blocks() {
     // GIVEN
     let fixture = CommitteeFixture::builder().build();
-    let worker_cache = fixture.shared_worker_cache();
+    let worker_cache = fixture.worker_cache();
     let primary = fixture.authorities().nth(1).unwrap();
     let name = primary.public_key();
 
@@ -345,12 +332,8 @@ async fn test_return_error_when_certificate_is_missing_when_get_blocks() {
     let network = test_network(primary.network_keypair(), primary.address());
 
     // WHEN we send a request to get a block
-    let block_waiter = BlockWaiter::new(
-        name.clone(),
-        worker_cache,
-        P2pNetwork::new(network),
-        Arc::new(mock_handler),
-    );
+    let block_waiter =
+        BlockWaiter::new(name.clone(), worker_cache, network, Arc::new(mock_handler));
     let response = block_waiter.get_blocks(vec![digest]).await.unwrap();
     let r = response.blocks.get(0).unwrap().to_owned();
     let block_error = r.err().unwrap();

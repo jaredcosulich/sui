@@ -3,28 +3,49 @@
 
 use std::env;
 use std::net::SocketAddr;
+use std::str::FromStr;
 
+use hyper::header::HeaderName;
 use hyper::header::HeaderValue;
 use hyper::Method;
 pub use jsonrpsee::server::ServerHandle;
 use jsonrpsee::server::{AllowHosts, ServerBuilder};
 use jsonrpsee::RpcModule;
 use prometheus::Registry;
-use tower::util::option_layer;
+use tap::TapFallible;
 use tower_http::cors::{AllowOrigin, CorsLayer};
-use tracing::info;
+use tracing::{info, warn};
 
-use crate::metrics::MetricsLayer;
+pub use balance_changes::*;
+pub use object_changes::*;
 use sui_open_rpc::{Module, Project};
 
+use crate::error::Error;
+use crate::metrics::MetricsLogger;
+use crate::routing_layer::RoutingLayer;
+
 pub mod api;
-pub mod bcs_api;
+mod balance_changes;
+pub mod coin_api;
+pub mod error;
 pub mod event_api;
+pub mod governance_api;
 mod metrics;
+mod object_changes;
 pub mod read_api;
-pub mod streaming_api;
+mod routing_layer;
 pub mod transaction_builder_api;
 pub mod transaction_execution_api;
+
+pub const CLIENT_SDK_TYPE_HEADER: &str = "client-sdk-type";
+/// The version number of the SDK itself. This can be different from the API version.
+pub const CLIENT_SDK_VERSION_HEADER: &str = "client-sdk-version";
+/// The RPC API version that the client is targeting. Different SDK versions may target the same
+/// API version.
+pub const CLIENT_TARGET_API_VERSION_HEADER: &str = "client-target-api-version";
+pub const APP_NAME_HEADER: &str = "app-name";
+
+pub const MAX_REQUEST_SIZE: u32 = 2 << 30;
 
 #[cfg(test)]
 #[path = "unit_tests/rpc_server_tests.rs"]
@@ -33,7 +54,7 @@ mod rpc_server_test;
 pub struct JsonRpcServerBuilder {
     module: RpcModule<()>,
     rpc_doc: Project,
-    registry: Option<Registry>,
+    registry: Registry,
 }
 
 pub fn sui_rpc_doc(version: &str) -> Project {
@@ -50,31 +71,20 @@ pub fn sui_rpc_doc(version: &str) -> Project {
 }
 
 impl JsonRpcServerBuilder {
-    pub fn new(version: &str, prometheus_registry: &Registry) -> anyhow::Result<Self> {
-        Ok(Self {
+    pub fn new(version: &str, prometheus_registry: &Registry) -> Self {
+        Self {
             module: RpcModule::new(()),
             rpc_doc: sui_rpc_doc(version),
-            registry: Some(prometheus_registry.clone()),
-        })
+            registry: prometheus_registry.clone(),
+        }
     }
 
-    pub fn new_without_metrics_for_testing() -> anyhow::Result<Self> {
-        Ok(Self {
-            module: RpcModule::new(()),
-            rpc_doc: sui_rpc_doc("0.0.0"),
-            registry: None,
-        })
-    }
-
-    pub fn register_module<T: SuiRpcModule>(&mut self, module: T) -> Result<(), anyhow::Error> {
+    pub fn register_module<T: SuiRpcModule>(&mut self, module: T) -> Result<(), Error> {
         self.rpc_doc.add_module(T::rpc_doc_module());
         Ok(self.module.merge(module.rpc())?)
     }
 
-    pub async fn start(
-        mut self,
-        listen_address: SocketAddr,
-    ) -> Result<ServerHandle, anyhow::Error> {
+    pub async fn start(mut self, listen_address: SocketAddr) -> Result<ServerHandle, Error> {
         let acl = match env::var("ACCESS_CONTROL_ALLOW_ORIGIN") {
             Ok(value) => {
                 let allow_hosts = value
@@ -93,25 +103,59 @@ impl JsonRpcServerBuilder {
             .allow_methods([Method::POST])
             // Allow requests from any origin
             .allow_origin(acl)
-            .allow_headers([hyper::header::CONTENT_TYPE]);
+            .allow_headers([
+                hyper::header::CONTENT_TYPE,
+                HeaderName::from_static(CLIENT_SDK_TYPE_HEADER),
+                HeaderName::from_static(CLIENT_SDK_VERSION_HEADER),
+                HeaderName::from_static(CLIENT_TARGET_API_VERSION_HEADER),
+                HeaderName::from_static(APP_NAME_HEADER),
+            ]);
+
+        let routing = self.rpc_doc.method_routing.clone();
 
         self.module
             .register_method("rpc.discover", move |_, _| Ok(self.rpc_doc.clone()))?;
         let methods_names = self.module.method_names().collect::<Vec<_>>();
 
-        let metrics_layer = option_layer(self.registry.map(|registry| {
-            MetricsLayer::new(&registry, &methods_names);
-        }));
+        let max_connection = env::var("RPC_MAX_CONNECTION")
+            .ok()
+            .and_then(|o| {
+                u32::from_str(&o)
+                    .tap_err(|e| warn!("Cannot parse RPC_MAX_CONNECTION to u32: {e}"))
+                    .ok()
+            })
+            .unwrap_or(u32::MAX);
+
+        let metrics_logger = MetricsLogger::new(&self.registry, &methods_names);
+
+        let disable_routing = env::var("DISABLE_BACKWARD_COMPATIBILITY")
+            .ok()
+            .and_then(|v| bool::from_str(&v).ok())
+            .unwrap_or_default();
+        info!(
+            "Compatibility method routing {}.",
+            if disable_routing {
+                "disabled"
+            } else {
+                "enabled"
+            }
+        );
+        // We need to use the routing layer to block access to the old methods when routing is disabled.
+        let routing_layer = RoutingLayer::new(routing, disable_routing);
+
         let middleware = tower::ServiceBuilder::new()
             .layer(cors)
-            .layer(metrics_layer);
+            .layer(routing_layer);
 
         let server = ServerBuilder::default()
+            .batch_requests_supported(false)
+            .max_response_body_size(MAX_REQUEST_SIZE)
+            .max_connections(max_connection)
             .set_host_filtering(AllowHosts::Any)
             .set_middleware(middleware)
+            .set_logger(metrics_logger)
             .build(listen_address)
             .await?;
-
         let addr = server.local_addr()?;
         let handle = server.start(self.module)?;
 
