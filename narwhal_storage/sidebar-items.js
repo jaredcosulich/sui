@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["LAST_PROPOSAL_KEY"],"struct":["CertificateStore","HeaderStore","NodeStorage","PayloadStore","ProposerStore","VoteDigestStore"],"type":["PayloadToken","ProposerKey"]};

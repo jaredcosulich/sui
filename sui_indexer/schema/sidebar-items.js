@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["addresses","checkpoints","error_logs","events","input_objects","move_calls","objects","objects_history","owner","owner_history","packages","recipients","sql_types","transactions"]};
