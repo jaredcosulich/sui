@@ -223,10 +223,8 @@ module sui::sui_system_state_inner {
             p2p_address,
             primary_address,
             worker_address,
-            option::none(),
             gas_price,
             commission_rate,
-            false, // not an initial validator active at genesis
             ctx
         );
 
@@ -713,10 +711,10 @@ module sui::sui_system_state_inner {
             &mut storage_fund_reward,
             &mut self.validator_report_records,
             reward_slashing_rate,
-            self.parameters.governance_start_epoch,
             VALIDATOR_LOW_STAKE_THRESHOLD,
             VALIDATOR_VERY_LOW_STAKE_THRESHOLD,
             VALIDATOR_LOW_STAKE_GRACE_PERIOD,
+            self.parameters.governance_start_epoch,
             ctx,
         );
 

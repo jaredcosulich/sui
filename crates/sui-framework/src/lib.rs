@@ -6,7 +6,14 @@ use move_core_types::gas_algebra::InternalGas;
 use once_cell::sync::Lazy;
 use std::path::Path;
 use sui_framework_build::compiled_package::{BuildConfig, CompiledPackage};
-use sui_types::error::SuiResult;
+use sui_types::{
+    base_types::ObjectID,
+    digests::TransactionDigest,
+    error::SuiResult,
+    move_package::MovePackage,
+    object::{Object, OBJECT_START_VERSION},
+    MOVE_STDLIB_OBJECT_ID,
+};
 
 pub mod natives;
 
@@ -58,6 +65,27 @@ pub fn get_sui_framework_bytes() -> Vec<Vec<u8>> {
     bcs::from_bytes(SUI_FRAMEWORK_BYTES).unwrap()
 }
 
+pub fn get_sui_framework_transitive_dependencies() -> Vec<ObjectID> {
+    vec![MOVE_STDLIB_OBJECT_ID]
+}
+
+pub fn get_sui_framework_package() -> MovePackage {
+    MovePackage::new_system(
+        OBJECT_START_VERSION,
+        get_sui_framework(),
+        get_sui_framework_transitive_dependencies(),
+    )
+}
+
+pub fn get_sui_framework_object() -> Object {
+    Object::new_system_package(
+        get_sui_framework(),
+        OBJECT_START_VERSION,
+        get_sui_framework_transitive_dependencies(),
+        TransactionDigest::genesis(),
+    )
+}
+
 pub fn get_sui_framework_test() -> Vec<CompiledModule> {
     Lazy::force(&SUI_FRAMEWORK_TEST).to_owned()
 }
@@ -68,6 +96,27 @@ pub fn get_move_stdlib() -> Vec<CompiledModule> {
 
 pub fn get_move_stdlib_bytes() -> Vec<Vec<u8>> {
     bcs::from_bytes(MOVE_STDLIB_BYTES).unwrap()
+}
+
+pub fn get_move_stdlib_transitive_dependencies() -> Vec<ObjectID> {
+    vec![]
+}
+
+pub fn get_move_stdlib_package() -> MovePackage {
+    MovePackage::new_system(
+        OBJECT_START_VERSION,
+        get_move_stdlib(),
+        get_move_stdlib_transitive_dependencies(),
+    )
+}
+
+pub fn get_move_stdlib_object() -> Object {
+    Object::new_system_package(
+        get_move_stdlib(),
+        OBJECT_START_VERSION,
+        get_move_stdlib_transitive_dependencies(),
+        TransactionDigest::genesis(),
+    )
 }
 
 pub fn get_move_stdlib_test() -> Vec<CompiledModule> {
@@ -108,4 +157,16 @@ pub fn build_move_package(path: &Path, config: BuildConfig) -> SuiResult<Compile
         pkg.verify_framework_version(get_sui_framework(), get_move_stdlib())?;
     }*/
     Ok(pkg)
+}
+
+pub fn make_system_modules() -> Vec<Vec<CompiledModule>> {
+    vec![get_move_stdlib(), get_sui_framework()]
+}
+
+pub fn make_system_packages() -> Vec<MovePackage> {
+    vec![get_move_stdlib_package(), get_sui_framework_package()]
+}
+
+pub fn make_system_objects() -> Vec<Object> {
+    vec![get_move_stdlib_object(), get_sui_framework_object()]
 }

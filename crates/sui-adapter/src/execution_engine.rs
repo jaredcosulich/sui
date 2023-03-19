@@ -368,13 +368,14 @@ fn advance_epoch<S: BackingPackageStore + ParentSync + ChildObjectResolver>(
         )?;
     }
 
-    for (version, modules) in change_epoch.system_packages.into_iter() {
-        let modules = modules
+    for (version, modules, dependencies) in change_epoch.system_packages.into_iter() {
+        let modules: Vec<_> = modules
             .into_iter()
             .map(|m| CompiledModule::deserialize(&m).unwrap())
             .collect();
 
-        let mut new_package = Object::new_system_package(modules, version, tx_ctx.digest())?;
+        let mut new_package =
+            Object::new_system_package(modules, version, dependencies, tx_ctx.digest());
 
         info!(
             "upgraded system package {:?}",

@@ -95,8 +95,7 @@ blst = { version = "0.3", features = ["no-threads"] }
 brotli = { version = "3", default-features = false, features = ["std"] }
 brotli-decompressor = { version = "2", default-features = false, features = ["std"] }
 bs58 = { version = "0.4", features = ["check"] }
-bstr-6f8ce4dd05d13bba = { package = "bstr", version = "0.2", features = ["serde1"] }
-bstr-dff4ba8e3ae991db = { package = "bstr", version = "1" }
+bstr = { version = "1" }
 bulletproofs = { version = "4" }
 byte-slice-cast = { version = "1" }
 bytemuck = { version = "1", default-features = false }
@@ -280,8 +279,7 @@ io-lifetimes = { version = "1" }
 iri-string = { version = "0.4" }
 is-terminal = { version = "0.4", default-features = false }
 itertools = { version = "0.10" }
-itoa-9fbad63c4bcf4a8f = { package = "itoa", version = "0.4" }
-itoa-dff4ba8e3ae991db = { package = "itoa", version = "1", default-features = false }
+itoa = { version = "1", default-features = false }
 js-sys = { version = "0.3", default-features = false }
 jsonrpsee = { version = "0.16", default-features = false, features = ["full"] }
 jsonrpsee-client-transport = { version = "0.16", default-features = false, features = ["tls", "web", "ws"] }
@@ -347,6 +345,7 @@ move-stackless-bytecode = { git = "https://github.com/move-language/move", rev =
 move-stdlib = { git = "https://github.com/move-language/move", rev = "f3cab72c7b7401de34a2d4c4ac86f9e402256e25", default-features = false }
 move-symbol-pool = { git = "https://github.com/move-language/move", rev = "f3cab72c7b7401de34a2d4c4ac86f9e402256e25" }
 move-vm-runtime = { git = "https://github.com/move-language/move", rev = "f3cab72c7b7401de34a2d4c4ac86f9e402256e25" }
+move-vm-test-utils = { git = "https://github.com/move-language/move", rev = "f3cab72c7b7401de34a2d4c4ac86f9e402256e25" }
 move-vm-types = { git = "https://github.com/move-language/move", rev = "f3cab72c7b7401de34a2d4c4ac86f9e402256e25" }
 multiaddr = { version = "0.17" }
 multibase = { version = "0.9" }
@@ -726,8 +725,7 @@ blst = { version = "0.3", features = ["no-threads"] }
 brotli = { version = "3", default-features = false, features = ["std"] }
 brotli-decompressor = { version = "2", default-features = false, features = ["std"] }
 bs58 = { version = "0.4", features = ["check"] }
-bstr-6f8ce4dd05d13bba = { package = "bstr", version = "0.2", features = ["serde1"] }
-bstr-dff4ba8e3ae991db = { package = "bstr", version = "1" }
+bstr = { version = "1" }
 bulletproofs = { version = "4" }
 bumpalo = { version = "3" }
 byte-slice-cast = { version = "1" }
@@ -943,8 +941,7 @@ io-lifetimes = { version = "1" }
 iri-string = { version = "0.4" }
 is-terminal = { version = "0.4", default-features = false }
 itertools = { version = "0.10" }
-itoa-9fbad63c4bcf4a8f = { package = "itoa", version = "0.4" }
-itoa-dff4ba8e3ae991db = { package = "itoa", version = "1", default-features = false }
+itoa = { version = "1", default-features = false }
 jobserver = { version = "0.1", default-features = false }
 js-sys = { version = "0.3", default-features = false }
 jsonrpsee = { version = "0.16", default-features = false, features = ["full"] }
@@ -1016,6 +1013,7 @@ move-stackless-bytecode = { git = "https://github.com/move-language/move", rev =
 move-stdlib = { git = "https://github.com/move-language/move", rev = "f3cab72c7b7401de34a2d4c4ac86f9e402256e25", default-features = false }
 move-symbol-pool = { git = "https://github.com/move-language/move", rev = "f3cab72c7b7401de34a2d4c4ac86f9e402256e25" }
 move-vm-runtime = { git = "https://github.com/move-language/move", rev = "f3cab72c7b7401de34a2d4c4ac86f9e402256e25" }
+move-vm-test-utils = { git = "https://github.com/move-language/move", rev = "f3cab72c7b7401de34a2d4c4ac86f9e402256e25" }
 move-vm-types = { git = "https://github.com/move-language/move", rev = "f3cab72c7b7401de34a2d4c4ac86f9e402256e25" }
 multiaddr = { version = "0.17" }
 multibase = { version = "0.9" }

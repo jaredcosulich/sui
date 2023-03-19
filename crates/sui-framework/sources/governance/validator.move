@@ -216,10 +216,8 @@ module sui::validator {
         p2p_address: vector<u8>,
         primary_address: vector<u8>,
         worker_address: vector<u8>,
-        initial_stake_option: Option<Balance<SUI>>,
         gas_price: u64,
         commission_rate: u64,
-        is_active_at_genesis: bool,
         ctx: &mut TxContext
     ): Validator {
         assert!(
@@ -254,10 +252,8 @@ module sui::validator {
 
         new_from_metadata(
             metadata,
-            initial_stake_option,
             gas_price,
             commission_rate,
-            is_active_at_genesis,
             ctx
         )
     }
@@ -304,6 +300,31 @@ module sui::validator {
                 amount: stake_amount,
             }
         );
+    }
+
+    /// Request to add stake to the validator's staking pool at genesis
+    public(friend) fun request_add_stake_at_genesis(
+        self: &mut Validator,
+        stake: Balance<SUI>,
+        staker_address: address,
+        ctx: &mut TxContext,
+    ) {
+        assert!(tx_context::epoch(ctx) == 0, 0);
+        let stake_amount = balance::value(&stake);
+        assert!(stake_amount > 0, 0);
+
+        staking_pool::request_add_stake(
+            &mut self.staking_pool,
+            stake, 
+            self.metadata.sui_address, 
+            staker_address, 
+            0, // epoch 0 -- genesis
+            ctx
+        );
+
+        // Process stake right away 
+        staking_pool::process_pending_stake(&mut self.staking_pool);
+        self.next_epoch_stake = self.next_epoch_stake + stake_amount;
     }
 
     /// Request to withdraw stake from the validator's staking pool, processed at the end of the epoch.
@@ -738,51 +759,26 @@ module sui::validator {
     /// Create a new validator from the given `ValidatorMetadata`, called by both `new` and `new_for_testing`.
     fun new_from_metadata(
         metadata: ValidatorMetadata,
-        initial_stake_option: Option<Balance<SUI>>,
         gas_price: u64,
         commission_rate: u64,
-        is_active_at_genesis: bool,
         ctx: &mut TxContext
     ): Validator {
         let sui_address = metadata.sui_address;
 
-        let stake_amount =
-            if (option::is_some(&initial_stake_option)) balance::value(option::borrow(&initial_stake_option))
-            else 0;
-
         let staking_pool = staking_pool::new(ctx);
-
-        if (is_active_at_genesis) {
-            staking_pool::activate_staking_pool(&mut staking_pool, 0);
-        };
-
-        // Add the validator's starting stake to the staking pool if there exists one.
-        if (option::is_some(&initial_stake_option)) {
-            staking_pool::request_add_stake(
-                &mut staking_pool,
-                option::extract(&mut initial_stake_option),
-                sui_address,
-                sui_address,
-                tx_context::epoch(ctx),
-                ctx
-            );
-            // We immediately process this stake as they are at validator setup time and this is the validator staking with itself.
-            staking_pool::process_pending_stake(&mut staking_pool);
-        };
-        option::destroy_none(initial_stake_option);
 
         let operation_cap_id = validator_cap::new_unverified_validator_operation_cap_and_transfer(sui_address, ctx);
         Validator {
             metadata,
-            // Initialize the voting power to be the same as the stake amount.
+            // Initialize the voting power to be 0.
             // At the epoch change where this validator is actually added to the
             // active validator set, the voting power will be updated accordingly.
-            voting_power: stake_amount,
+            voting_power: 0,
             operation_cap_id,
             gas_price,
             staking_pool,
             commission_rate,
-            next_epoch_stake: stake_amount,
+            next_epoch_stake: 0,
             next_epoch_gas_price: gas_price,
             next_epoch_commission_rate: commission_rate,
             extra_fields: bag::new(ctx),
@@ -815,7 +811,7 @@ module sui::validator {
         is_active_at_genesis: bool,
         ctx: &mut TxContext
     ): Validator {
-        new_from_metadata(
+        let validator = new_from_metadata(
             new_metadata(
                 sui_address,
                 protocol_pubkey_bytes,
@@ -832,11 +828,26 @@ module sui::validator {
                 string::from_ascii(ascii::string(worker_address)),
                 bag::new(ctx),
             ),
-            initial_stake_option,
             gas_price,
             commission_rate,
-            is_active_at_genesis,
             ctx
-        )
+        );
+
+        // Add the validator's starting stake to the staking pool if there exists one.
+        if (option::is_some(&initial_stake_option)) {
+            request_add_stake_at_genesis(
+                &mut validator,
+                option::extract(&mut initial_stake_option),
+                sui_address, // give the stake to the validator
+                ctx
+            );
+        };
+        option::destroy_none(initial_stake_option);
+
+        if (is_active_at_genesis) {
+            activate(&mut validator, 0);
+        };
+
+        validator
     }
 }

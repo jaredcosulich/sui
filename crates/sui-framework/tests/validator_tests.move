@@ -36,7 +36,7 @@ module sui::validator_tests {
 
     #[test_only]
     fun get_test_validator(ctx: &mut TxContext, init_stake: Balance<SUI>): Validator {
-        validator::new(
+        let validator = validator::new(
             VALID_ADDRESS,
             VALID_PUBKEY,
             VALID_NET_PUBKEY,
@@ -50,12 +50,21 @@ module sui::validator_tests {
             VALID_P2P_ADDR,
             VALID_CONSENSUS_ADDR,
             VALID_WORKER_ADDR,
-            option::some(init_stake),
             1,
             0,
-            true,
             ctx
-        )
+        );
+
+        validator::request_add_stake_at_genesis(
+            &mut validator,
+            init_stake,
+            VALID_ADDRESS,
+            ctx
+        );
+
+        validator::activate(&mut validator, 0);
+
+        validator
     }
 
     #[test]
